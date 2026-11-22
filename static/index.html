@@ -258,6 +258,7 @@ async function renderRun(id) {
               </div>`).join("")}
           </div>
           ${s.files?.length ? `<div class="files" title="files written by this stage">wrote: ${s.files.map(esc).join(", ")}</div>` : ""}
+          ${done && s.status !== "created" ? `<div class="stage-actions" style="margin:8px 0 0"><button data-retry="${a}">Retry stage</button></div>` : ""}
         </div>`).join("")}
     </div>
     <p class="muted" style="font-size:12px">workdir: ${esc(run.workdir)}</p>
@@ -293,6 +294,11 @@ async function renderRun(id) {
     navigator.clipboard.writeText(el.dataset.copy).then(() => el.textContent = "Copied", () => prompt("Copy:", el.dataset.copy)));
   document.querySelectorAll("[data-decide]").forEach(el => el.onclick = async () => {
     await api("POST", `/api/runs/${id}/stages/${el.dataset.stage}/decision`, { action: el.dataset.decide }).catch(e => alert(e.message));
+    renderRun(id);
+  });
+  document.querySelectorAll("[data-retry]").forEach(el => el.onclick = async () => {
+    await api("POST", `/api/runs/${id}/stages/${el.dataset.retry}/retry`).catch(e => alert(e.message));
+    selectedJob = null;
     renderRun(id);
   });
   document.getElementById("pause")?.addEventListener("click", async () => {

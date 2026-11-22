@@ -227,9 +227,9 @@ def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
 
 
 def output_env(run: dict, upto: int) -> dict[str, str]:
-    """FACTORY_OUT_<JOB_NAME> = output of each job in stages [0, upto)."""
+    """FACTORY_OUT_<STAGE>_<JOB> = output of each job in stages [0, upto)."""
     return {
-        "FACTORY_OUT_" + re.sub(r"\W", "_", job["name"]).upper(): _tail(job["log"].strip(), MAX_OUTPUT_CHARS)
+        "FACTORY_OUT_" + re.sub(r"\W", "_", f"{stage['name']}_{job['name']}").upper(): _tail(job["log"].strip(), MAX_OUTPUT_CHARS)
         for stage in run["stages"][:upto]
         for job in stage["jobs"]
     }
@@ -325,7 +325,7 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
     job["status"] = {APPROVED: "success", WAITING: "waiting"}.get(job["verdict"], "failed")
 
 
-async def execute_run(run: dict) -> None:
+async def execute_run(run: dict, start: int = 0) -> None:
     if run["status"] == "pending":
         run["status"] = "running"
     run["started_at"] = time.time()
@@ -335,6 +335,8 @@ async def execute_run(run: dict) -> None:
     context_file.parent.mkdir(parents=True, exist_ok=True)
     failed = False
     for i, stage in enumerate(run["stages"]):
+        if i < start:
+            continue
         while run["status"] == "paused":
             await asyncio.sleep(0.5)
         if run["status"] == "canceled":
@@ -414,10 +416,14 @@ def create_run(p: Pipeline) -> dict:
         ],
     }
     RUNS[run["id"]] = run
-    task = asyncio.create_task(execute_run(run))
+    start_run_task(run)
+    return run
+
+
+def start_run_task(run: dict, start: int = 0) -> None:
+    task = asyncio.create_task(execute_run(run, start))
     RUN_TASKS.add(task)
     task.add_done_callback(RUN_TASKS.discard)
-    return run
 
 
 # ---------------------------------------------------------------- API
@@ -505,6 +511,26 @@ def cancel_run(rid: str) -> dict:
         if (event := WAITERS.get(id(stage))) is not None:
             stage["decision"] = "cancel"
             event.set()
+    return run
+
+
+@app.post("/api/runs/{rid}/stages/{si}/retry")
+async def retry_stage(rid: str, si: int) -> dict:
+    """Like GitLab CI: rerun this stage, then continue with the stages after it."""
+    run = RUNS.get(rid)
+    if run is None:
+        raise HTTPException(404, "run not found")
+    if not 0 <= si < len(run["stages"]):
+        raise HTTPException(404, "stage not found")
+    if run["status"] not in ("failed", "canceled"):
+        raise HTTPException(409, f"run is {run['status']}, can only retry a finished run")
+    for stage in run["stages"][si:]:
+        stage.update(status="created", verdict=None, decision=None, files=[])
+        for job in stage["jobs"]:
+            job.update(session_id=None, resume_cmd=None, verdict=None, prompt_sent=None, status="created",
+                       log="", exit_code=None, started_at=None, finished_at=None)
+    run.update(status="running", finished_at=None)
+    start_run_task(run, si)
     return run
 
 
