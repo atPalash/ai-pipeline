@@ -71,7 +71,7 @@
   .job.selected { border-color: var(--running); box-shadow: 0 0 0 1px var(--running); }
   .job .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .job .dur { font-size: 11px; color: var(--muted); }
-  .job .tag { font-size: 10px; font-weight: 700; color: #6e49cb; border: 1px solid #6e49cb; border-radius: 3px; padding: 0 3px; }
+  .tag { font-size: 10px; font-weight: 700; color: #6e49cb; border: 1px solid #6e49cb; border-radius: 3px; padding: 0 3px; }
   .files { margin-top: 8px; font-size: 11px; color: var(--muted); max-width: 200px; word-break: break-all; }
   select { font: inherit; padding: 4px; border: 1px solid var(--border); border-radius: 4px; }
   .stage:not(:first-child) .job::before,
@@ -88,7 +88,12 @@
   /* editor */
   .editor-stages { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 8px; }
   .editor-stage { min-width: 280px; border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: var(--bg); }
-  .editor-job { border: 1px solid var(--border); border-radius: 4px; padding: 8px; background: #fff; margin-top: 8px; }
+  .editor-job { position: relative; border: 1px solid var(--border); border-radius: 4px; padding: 8px; background: #fff; margin-top: 8px; }
+  .suggest { position: absolute; left: 8px; right: 8px; z-index: 10; background: #fff; border: 1px solid var(--border); border-radius: 4px;
+             box-shadow: 0 4px 12px rgba(0,0,0,.12); max-height: 260px; overflow: auto; }
+  .suggest .opt { padding: 6px 8px; cursor: pointer; font-size: 12px; }
+  .suggest .opt.active { background: #e9f0fb; }
+  .suggest .desc { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .editor-job textarea { margin-top: 6px; }
   .error { color: var(--failed); margin: 8px 0; }
 </style>
@@ -257,7 +262,7 @@ async function renderRun(id) {
     </div>
     <p class="muted" style="font-size:12px">workdir: ${esc(run.workdir)}</p>
     <section style="margin-top:24px">
-      <h2>${esc(run.stages[si].name)} / ${esc(sel.name)} ${badge(sel.status)}${sel.verdict ? `<span class="verdict ${esc(sel.verdict)}">${esc(sel.verdict)}</span>` : ""}
+      <h2>${esc(run.stages[si].name)} / ${esc(sel.name)} ${badge(sel.status)}${sel.agent ? `<span class="tag" style="font-size:12px;margin-left:6px">agent: ${esc(sel.agent)}</span>` : ""}${sel.skill ? `<span class="tag" style="font-size:12px;margin-left:6px">skill: ${esc(sel.skill)}</span>` : ""}${sel.verdict ? `<span class="verdict ${esc(sel.verdict)}">${esc(sel.verdict)}</span>` : ""}
         ${sel.exit_code !== null ? `<span class="muted" style="font-size:12px">exit code ${esc(sel.exit_code)}</span>` : ""}</h2>
       ${run.stages[si].status === "waiting" ? `
         <div class="waitbox">
@@ -316,6 +321,61 @@ async function renderRun(id) {
 // ------------------------------------------------------------ editor
 const DEFAULT_SCRIPT = "import time\nprint('working...')\ntime.sleep(5)\nprint('done')";
 let draft = null;
+let agents = [];
+
+async function loadAgents() {
+  try { agents = await api("GET", `/api/agents?workdir=${encodeURIComponent(draft.workdir ?? "")}`); }
+  catch { agents = []; }
+}
+
+// Typing "/" at the start of a Copilot prompt suggests agents and skills.
+function attachAgentSuggest(ta) {
+  const box = document.createElement("div");
+  box.className = "suggest";
+  box.hidden = true;
+  ta.after(box);
+  let items = [], active = 0;
+  const close = () => { box.hidden = true; items = []; };
+  const pick = a => {
+    const rest = ta.value.slice(ta.selectionStart).replace(/^[\w.-]*\s*/, "");
+    ta.value = `/${a.id} ${rest}`;
+    ta.selectionStart = ta.selectionEnd = a.id.length + 2;
+    close();
+    ta.dispatchEvent(new Event("input"));
+    ta.focus();
+  };
+  const render = () => {
+    box.innerHTML = items.map((a, i) => `
+      <div class="opt ${i === active ? "active" : ""}" data-i="${i}">
+        <b>/${esc(a.id)}</b> <span class="tag">${esc(a.kind)}</span> <span class="muted">${a.name !== a.id ? esc(a.name) + " · " : ""}${esc(a.source)}</span>
+        <div class="desc">${esc(a.description)}</div>
+      </div>`).join("") || `<div class="opt muted">No agents or skills found. Add repo roots to FACTORY_AGENT_DIRS or set the working directory.</div>`;
+    box.hidden = false;
+    box.querySelectorAll("[data-i]").forEach(el => el.onmousedown = e => { e.preventDefault(); pick(items[+el.dataset.i]); });
+    box.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+  };
+  const update = () => {
+    const m = ta.value.slice(0, ta.selectionStart).match(/^\/([\w.-]*)$/);
+    if (!m) return close();
+    const q = m[1].toLowerCase();
+    items = agents.filter(a => a.id.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
+    active = 0;
+    render();
+  };
+  ta.addEventListener("input", update);
+  ta.addEventListener("click", update);
+  ta.addEventListener("blur", close);
+  ta.addEventListener("keydown", e => {
+    if (box.hidden || !items.length) { if (e.key === "Escape") close(); return; }
+    if (e.key === "ArrowDown") active = (active + 1) % items.length;
+    else if (e.key === "ArrowUp") active = (active - 1 + items.length) % items.length;
+    else if (e.key === "Enter" || e.key === "Tab") return e.preventDefault(), pick(items[active]);
+    else if (e.key === "Escape") return close();
+    else return;
+    e.preventDefault();
+    render();
+  });
+}
 
 async function showEditor(id) {
   if (id) {
@@ -324,6 +384,7 @@ async function showEditor(id) {
   } else {
     draft = { name: "new-pipeline", stages: [{ name: "build", jobs: [{ name: "job1", script: DEFAULT_SCRIPT }] }] };
   }
+  await loadAgents();
   renderEditor();
 }
 
@@ -362,7 +423,7 @@ function renderEditor(error) {
                 <button class="danger" title="delete job" data-act="deljob" data-si="${si}" data-ji="${ji}">✕</button>
               </div>
               ${j.type === "copilot"
-                ? `<textarea data-f="prompt" data-si="${si}" data-ji="${ji}" placeholder="Prompt for Copilot CLI. Earlier stage results and STATUS instructions are appended automatically.">${esc(j.prompt)}</textarea>`
+                ? `<textarea data-f="prompt" data-si="${si}" data-ji="${ji}" placeholder="Prompt for Copilot CLI. Start with / to pick an agent or skill. Earlier stage results and STATUS instructions are appended automatically.">${esc(j.prompt)}</textarea>`
                 : `<textarea data-f="script" data-si="${si}" data-ji="${ji}" spellcheck="false">${esc(j.script)}</textarea>`}
             </div>`).join("")}
           <button style="margin-top:8px" data-act="addjob" data-si="${si}">+ job</button>
@@ -380,6 +441,8 @@ function renderEditor(error) {
     if (f === "prompt") draft.stages[si].jobs[ji].prompt = el.value;
     if (f === "type") { draft.stages[si].jobs[ji].type = el.value; renderEditor(); }
   });
+  app.querySelectorAll('textarea[data-f="prompt"]').forEach(attachAgentSuggest);
+  app.querySelector('[data-f="workdir"]').onchange = loadAgents;
 
   app.querySelectorAll("[data-act]").forEach(el => el.onclick = () => {
     const si = Number(el.dataset.si), ji = Number(el.dataset.ji);

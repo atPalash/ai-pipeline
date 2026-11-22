@@ -32,6 +32,12 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
 MAX_FILE_CHARS = 20_000
 MAX_OUTPUT_CHARS = 4_000
 SESSION_RE = re.compile(r"--resume[= ]([\w-]+)")
+# A Copilot prompt starting with "/<id>" runs that agent (--agent) or skill.
+AGENT_PREFIX_RE = re.compile(r"^/([\w.-]+)\s*")
+# Extra repo roots whose agents/skills are offered and passed to Copilot via --add-dir.
+AGENT_DIRS = [p for p in os.environ.get("FACTORY_AGENT_DIRS", "").split(":") if p]
+HOME_CONFIG_DIRS = [Path.home() / d for d in (".copilot", ".agents", ".claude")]
+REPO_CONFIG_DIRS = (".github", ".agents", ".claude")
 # Every job ends with a verdict; a stage proceeds only when all its jobs are APPROVED.
 APPROVED, WAITING, REJECTED, FAILED = "APPROVED", "WAITING_FOR_MANUAL_APPROVAL", "REJECTED", "FAILED"
 STATUS_RE = re.compile(rf"STATUS:\W*({APPROVED}|{WAITING}|{REJECTED})\b")
@@ -170,6 +176,46 @@ def build_context(run: dict, upto: int) -> str:
     return "\n\n".join(parts)
 
 
+# ---------------------------------------------------------------- agents
+
+def _frontmatter(text: str, key: str) -> str:
+    m = re.match(r"---\n(.*?)\n---", text, re.S)
+    found = m and re.search(rf"^{key}:\s*[\"']?(.*?)[\"']?\s*$", m[1], re.M)
+    return found[1] if found else ""
+
+
+def list_agents(workdir: str) -> list[dict]:
+    """Custom agents and skills the Copilot CLI can load for a job running in `workdir`."""
+    roots = [(d, "personal") for d in HOME_CONFIG_DIRS]
+    for root, source in [(workdir, "workdir")] + [(d, d) for d in AGENT_DIRS]:
+        if root:
+            roots += [(Path(root) / c, source) for c in REPO_CONFIG_DIRS]
+    found: dict[tuple[str, str], dict] = {}
+
+    def add(kind: str, item_id: str, f: Path, source: str) -> None:
+        if (kind, item_id) in found:
+            return
+        try:
+            text = f.read_text()
+        except (OSError, UnicodeDecodeError):
+            return
+        found[(kind, item_id)] = {
+            "kind": kind,
+            "id": item_id,
+            "name": _frontmatter(text, "name") or item_id,
+            "description": _frontmatter(text, "description")[:200],
+            "source": source,
+        }
+
+    for root, source in roots:
+        agents_dir, skills_dir = root / "agents", root / "skills"
+        for f in sorted(agents_dir.glob("*.md")) if agents_dir.is_dir() else []:
+            add("agent", f.name.removesuffix(".md").removesuffix(".agent"), f, source)
+        for f in sorted(skills_dir.glob("*/SKILL.md")) if skills_dir.is_dir() else []:
+            add("skill", f.parent.name, f, source)
+    return list(found.values())
+
+
 # ---------------------------------------------------------------- runner
 
 def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
@@ -218,12 +264,24 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
     job["status"] = "running"
     job["started_at"] = time.time()
     if job["type"] == "copilot":
-        prompt = job["prompt"] + STATUS_INSTRUCTIONS.format(outcome_file=job["outcome_file"])
+        prompt = job["prompt"]
+        extra_args = [a for d in AGENT_DIRS for a in ("--add-dir", d)]
+        if m := AGENT_PREFIX_RE.match(prompt):
+            kinds = {a["kind"] for a in list_agents(run["workdir"]) if a["id"] == m[1]}
+            if "agent" in kinds:
+                job["agent"] = m[1]
+                prompt = prompt[m.end():]
+            elif "skill" in kinds:
+                job["skill"] = m[1]
+                prompt = f"Use the `{m[1]}` skill.\n\n" + prompt[m.end():]
+        if job["agent"]:
+            extra_args += ["--agent", job["agent"]]
+        prompt += STATUS_INSTRUCTIONS.format(outcome_file=job["outcome_file"])
         if context:
             prompt += ("\n\n---\nResults from earlier pipeline stages "
                        "(files are in the current directory):\n\n" + context)
         job["prompt_sent"] = prompt
-        argv = [COPILOT_CMD, "-p", prompt, "--allow-all-tools"]
+        argv = [COPILOT_CMD, "-p", prompt, "--allow-all-tools", *extra_args]
     else:
         argv = [sys.executable, "-u", "-c", job["script"]]
     env = {
@@ -344,9 +402,9 @@ def create_run(p: Pipeline) -> dict:
                 "decision": None,
                 "files": [],
                 "jobs": [
-                    {"name": j.name, "type": j.type, "script": j.script, "prompt": j.prompt,
+                    {"name": j.name, "type": j.type, "script": j.script, "prompt": j.prompt, "agent": None,
                      "outcome_file": re.sub(r"\W", "_", j.name) + ".md",
-                     "session_id": None, "resume_cmd": None, "verdict": None,
+                     "session_id": None, "resume_cmd": None, "verdict": None, "skill": None,
                      "prompt_sent": None, "status": "created", "log": "",
                      "exit_code": None, "started_at": None, "finished_at": None}
                     for j in s.jobs
@@ -413,6 +471,11 @@ async def run_pipeline(pid: str) -> dict:
     if pid not in PIPELINES:
         raise HTTPException(404, "pipeline not found")
     return create_run(PIPELINES[pid])
+
+
+@app.get("/api/agents")
+def get_agents(workdir: str = "") -> list[dict]:
+    return list_agents(workdir if workdir and Path(workdir).is_dir() else "")
 
 
 @app.get("/api/runs")
