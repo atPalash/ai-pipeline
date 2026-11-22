@@ -90,19 +90,22 @@ class Decision(BaseModel):
 
 # ---------------------------------------------------------------- storage
 
+def _sleep_script(seconds: int, msg: str) -> str:
+    return f"import time\nprint('{msg}')\ntime.sleep({seconds})\nprint('ok')"
+
+
 def _sample_pipeline() -> Pipeline:
-    sleep = lambda s, msg: f"import time\nprint('{msg}')\ntime.sleep({s})\nprint('ok')"
     return Pipeline(
         id=uuid.uuid4().hex[:8],
         name="sample",
         stages=[
-            Stage(name="build", jobs=[Job(name="compile", script=sleep(5, "compiling"))]),
+            Stage(name="build", jobs=[Job(name="compile", script=_sleep_script(5, "compiling"))]),
             Stage(name="test", jobs=[
-                Job(name="unit", script=sleep(4, "unit tests")),
-                Job(name="integration", script=sleep(7, "integration tests")),
-                Job(name="lint", script=sleep(2, "linting")),
+                Job(name="unit", script=_sleep_script(4, "unit tests")),
+                Job(name="integration", script=_sleep_script(7, "integration tests")),
+                Job(name="lint", script=_sleep_script(2, "linting")),
             ]),
-            Stage(name="deploy", jobs=[Job(name="deploy", script=sleep(5, "deploying"))]),
+            Stage(name="deploy", jobs=[Job(name="deploy", script=_sleep_script(5, "deploying"))]),
         ],
     )
 
@@ -197,7 +200,7 @@ def job_verdict(job: dict) -> str:
     return APPROVED
 
 
-async def wait_for_approval(run: dict, stage: dict) -> str:
+async def wait_for_approval(run: dict, stage: dict) -> str | None:
     stage["status"] = "waiting"
     run["status"] = "waiting"
     event = asyncio.Event()
@@ -294,7 +297,6 @@ async def execute_run(run: dict) -> None:
             if verdicts & {REJECTED, FAILED}:
                 stage["verdict"] = REJECTED if REJECTED in verdicts else FAILED
             elif WAITING in verdicts:
-                stage["verdict"] = WAITING
                 stage["verdict"] = await wait_for_approval(run, stage)
                 for j in stage["jobs"]:
                     if j["status"] == "waiting" and run["status"] != "canceled":
@@ -496,6 +498,5 @@ def resume_run(rid: str) -> dict:
 
 
 if __name__ == "__main__":
-    import os
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", 8000)))
