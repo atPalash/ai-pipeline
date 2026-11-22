@@ -1,0 +1,100 @@
+[
+  {
+    "name": "sample",
+    "workdir": "",
+    "stages": [
+      {
+        "name": "build",
+        "jobs": [
+          {
+            "name": "compile",
+            "type": "python",
+            "script": "import time\nprint('compiling')\ntime.sleep(5)\nprint('ok')",
+            "prompt": ""
+          }
+        ]
+      },
+      {
+        "name": "test",
+        "jobs": [
+          {
+            "name": "unit",
+            "type": "python",
+            "script": "import time\nprint('unit tests')\ntime.sleep(4)\nprint('ok')",
+            "prompt": ""
+          },
+          {
+            "name": "integration",
+            "type": "python",
+            "script": "import time\nprint('integration tests')\ntime.sleep(7)\nprint('ok')",
+            "prompt": ""
+          },
+          {
+            "name": "lint",
+            "type": "python",
+            "script": "import time\nprint('linting')\ntime.sleep(2)\nprint('ok')",
+            "prompt": ""
+          }
+        ]
+      },
+      {
+        "name": "deploy",
+        "jobs": [
+          {
+            "name": "deploy",
+            "type": "python",
+            "script": "import time\nprint('deploying')\ntime.sleep(5)\nprint('ok')",
+            "prompt": ""
+          }
+        ]
+      }
+    ],
+    "id": "5819e9cf"
+  },
+  {
+    "name": "test-cli",
+    "workdir": "",
+    "stages": [
+      {
+        "name": "weather",
+        "jobs": [
+          {
+            "name": "weather",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "Summarize today's weather in write it to weather.md. Ask user for details."
+          }
+        ]
+      },
+      {
+        "name": "action",
+        "jobs": [
+          {
+            "name": "umbrella",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "Should I carry an umbrella? Answer briefly with a reason.\n\nMust answer in UMBRELLA | NOUMBRELLA"
+          },
+          {
+            "name": "suit",
+            "type": "copilot",
+            "script": "If today is sunday, then I will wear blue jacket",
+            "prompt": "if today is sunday, I will wear blue suit\n\nMust answer in SUNDAY | NOSUNDAY"
+          }
+        ]
+      },
+      {
+        "name": "take car",
+        "jobs": [
+          {
+            "name": "car",
+            "type": "python",
+            "script": "import os\n\n# Output of earlier jobs is in FACTORY_OUT_<JOB_NAME>\numbrella = \"NOUMBRELLA\" not in os.environ[\"FACTORY_OUT_UMBRELLA\"]\nsunday = \"NOSUNDAY\" not in os.environ[\"FACTORY_OUT_SUIT\"]\nprint(f\"umbrella={umbrella} sunday={sunday}\")\nprint(\"take car\" if umbrella or sunday else \"walk\")",
+            "prompt": ""
+          }
+        ]
+      }
+    ],
+    "id": "913b4663"
+  }
+]
