@@ -41,6 +41,8 @@ REPO_CONFIG_DIRS = (".github", ".agents", ".claude")
 # Every job ends with a verdict; a stage proceeds only when all its jobs are APPROVED.
 APPROVED, WAITING, REJECTED, FAILED = "APPROVED", "WAITING_FOR_MANUAL_APPROVAL", "REJECTED", "FAILED"
 STATUS_RE = re.compile(rf"STATUS:\W*({APPROVED}|{WAITING}|{REJECTED})\b")
+# Copilot -p cannot ask for approval (e.g. paths outside the working directory), so it denies instead.
+DENIED_RE = re.compile(r"no interactive user response was available|Denied, no one to approve")
 STATUS_INSTRUCTIONS = f"""
 
 ---
@@ -49,6 +51,8 @@ STATUS: {APPROVED}  (the task is done and the pipeline may continue)
 STATUS: {WAITING}  (a human must answer your questions, review, or decide)
 STATUS: {REJECTED}  (the task cannot be done or the result is not acceptable)
 If you need the user's input, ask your questions and use {WAITING}; do not invent answers.
+If access to a file, folder or tool is denied, do not work around it: say what you need and why,
+and use {WAITING} so the user can grant it.
 The user may continue this session in a terminal; once they are satisfied, write the agreed
 result to `{{outcome_file}}` in the current directory."""
 
@@ -129,7 +133,35 @@ def save_pipelines() -> None:
 
 
 PIPELINES: dict[str, Pipeline] = load_pipelines()
-RUNS: dict[str, dict] = {}
+
+
+def save_run(run: dict) -> None:
+    path = RUNS_DIR / run["id"] / "run.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(run))
+
+
+def load_runs() -> dict[str, dict]:
+    runs = {}
+    for f in RUNS_DIR.glob("*/run.json"):
+        try:
+            run = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if run["status"] not in TERMINAL:
+            # The server stopped mid-run; its processes and approval waits are gone.
+            run.update(status="canceled", finished_at=run["finished_at"] or time.time())
+            for stage in run["stages"]:
+                if stage["status"] not in ("success", "failed", "skipped"):
+                    stage["status"] = "canceled"
+                for job in stage["jobs"]:
+                    if job["status"] not in ("success", "failed", "skipped"):
+                        job["status"] = "canceled"
+        runs[run["id"]] = run
+    return runs
+
+
+RUNS: dict[str, dict] = load_runs()
 RUN_PROCS: dict[str, set[asyncio.subprocess.Process]] = {}
 RUN_TASKS: set[asyncio.Task] = set()
 WAITERS: dict[int, asyncio.Event] = {}  # id(stage dict) -> set when the user decides
@@ -238,6 +270,10 @@ def output_env(run: dict, upto: int) -> dict[str, str]:
 def job_verdict(job: dict) -> str:
     if job["exit_code"] != 0:
         return FAILED
+    if job["type"] == "copilot" and DENIED_RE.search(job["log"]):
+        job["log"] += (f"\n[factory] Copilot was denied access it asked for; defaulting to {WAITING}. "
+                        "Resume the session in a terminal to approve the access, then Approve the stage.\n")
+        return WAITING
     if found := STATUS_RE.findall(job["log"]):
         return found[-1]
     if job["type"] == "copilot":
@@ -371,6 +407,7 @@ async def execute_run(run: dict, start: int = 0) -> None:
             break
         stage["status"] = "success" if stage["verdict"] == APPROVED else "failed"
         failed = failed or stage["verdict"] != APPROVED
+        save_run(run)
 
     if run["status"] == "canceled":
         for stage in run["stages"]:
@@ -383,6 +420,25 @@ async def execute_run(run: dict, start: int = 0) -> None:
         run["status"] = "failed" if failed else "success"
     run["finished_at"] = time.time()
     RUN_PROCS.pop(run["id"], None)
+    save_run(run)
+
+
+def new_stage(s: Stage) -> dict:
+    return {
+        "name": s.name,
+        "status": "created",
+        "verdict": None,
+        "decision": None,
+        "files": [],
+        "jobs": [
+            {"name": j.name, "type": j.type, "script": j.script, "prompt": j.prompt, "agent": None,
+             "outcome_file": re.sub(r"\W", "_", j.name) + ".md",
+             "session_id": None, "resume_cmd": None, "verdict": None, "skill": None,
+             "prompt_sent": None, "status": "created", "log": "",
+             "exit_code": None, "started_at": None, "finished_at": None}
+            for j in s.jobs
+        ],
+    }
 
 
 def create_run(p: Pipeline) -> dict:
@@ -396,26 +452,10 @@ def create_run(p: Pipeline) -> dict:
         "created_at": time.time(),
         "started_at": None,
         "finished_at": None,
-        "stages": [
-            {
-                "name": s.name,
-                "status": "created",
-                "verdict": None,
-                "decision": None,
-                "files": [],
-                "jobs": [
-                    {"name": j.name, "type": j.type, "script": j.script, "prompt": j.prompt, "agent": None,
-                     "outcome_file": re.sub(r"\W", "_", j.name) + ".md",
-                     "session_id": None, "resume_cmd": None, "verdict": None, "skill": None,
-                     "prompt_sent": None, "status": "created", "log": "",
-                     "exit_code": None, "started_at": None, "finished_at": None}
-                    for j in s.jobs
-                ],
-            }
-            for s in p.stages
-        ],
+        "stages": [new_stage(s) for s in p.stages],
     }
     RUNS[run["id"]] = run
+    save_run(run)
     start_run_task(run)
     return run
 
@@ -496,6 +536,35 @@ def get_run(rid: str) -> dict:
     return RUNS[rid]
 
 
+@app.get("/api/runs/{rid}/files")
+def list_run_files(rid: str) -> dict:
+    run = RUNS.get(rid)
+    if run is None:
+        raise HTTPException(404, "run not found")
+    root = Path(run["workdir"])
+    files = []
+    for rel, mtime in sorted(snapshot(root).items()) if root.is_dir() else []:
+        try:
+            files.append({"path": rel, "size": (root / rel).stat().st_size, "mtime": mtime})
+        except OSError:
+            pass
+    return {"workdir": run["workdir"], "files": files}
+
+
+@app.get("/api/runs/{rid}/files/{path:path}")
+def get_run_file(rid: str, path: str) -> FileResponse:
+    run = RUNS.get(rid)
+    if run is None:
+        raise HTTPException(404, "run not found")
+    root = Path(run["workdir"]).resolve()
+    target = (root / path).resolve()
+    if root not in target.parents:
+        raise HTTPException(400, "path is outside the run folder")
+    if not target.is_file():
+        raise HTTPException(404, "file not found")
+    return FileResponse(target)
+
+
 @app.post("/api/runs/{rid}/cancel")
 def cancel_run(rid: str) -> dict:
     run = RUNS.get(rid)
@@ -516,20 +585,24 @@ def cancel_run(rid: str) -> dict:
 
 @app.post("/api/runs/{rid}/stages/{si}/retry")
 async def retry_stage(rid: str, si: int) -> dict:
-    """Like GitLab CI: rerun this stage, then continue with the stages after it."""
+    """Rerun from this stage with the pipeline's current definition, keeping earlier stages' results."""
     run = RUNS.get(rid)
     if run is None:
         raise HTTPException(404, "run not found")
     if not 0 <= si < len(run["stages"]):
         raise HTTPException(404, "stage not found")
-    if run["status"] not in ("failed", "canceled"):
+    if run["status"] not in TERMINAL:
         raise HTTPException(409, f"run is {run['status']}, can only retry a finished run")
-    for stage in run["stages"][si:]:
-        stage.update(status="created", verdict=None, decision=None, files=[])
-        for job in stage["jobs"]:
-            job.update(session_id=None, resume_cmd=None, verdict=None, prompt_sent=None, status="created",
-                       log="", exit_code=None, started_at=None, finished_at=None)
-    run.update(status="running", finished_at=None)
+    p = PIPELINES.get(run["pipeline_id"])
+    if p is None:
+        raise HTTPException(409, "the pipeline was deleted")
+    names = [s.name for s in p.stages]
+    if run["stages"][si]["name"] not in names:
+        raise HTTPException(409, f"stage '{run['stages'][si]['name']}' is no longer in the pipeline")
+    k = names.index(run["stages"][si]["name"])
+    run["stages"][si:] = [new_stage(s) for s in p.stages[k:]]
+    run.update(status="running", finished_at=None, pipeline_name=p.name)
+    save_run(run)
     start_run_task(run, si)
     return run
 

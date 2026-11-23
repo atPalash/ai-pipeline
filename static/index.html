@@ -144,6 +144,7 @@ function route() {
   clearTimeout(pollTimer);
   const [, view, id] = location.hash.split("/");
   if (view === "run") return showRun(id);
+  if (view === "files") return showFiles(id);
   if (view === "edit") return showEditor(id);
   if (view === "new") return showEditor(null);
   return showHome();
@@ -175,7 +176,7 @@ async function showHome() {
     <section>
       <h2>Runs</h2>
       <table>
-        <tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th><th>Duration</th></tr>
+        <tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th><th>Duration</th><th>Files</th></tr>
         ${runs.map(r => `
           <tr>
             <td>${badge(r.status)}</td>
@@ -183,7 +184,8 @@ async function showHome() {
             <td>${esc(r.pipeline_name)}</td>
             <td><div class="mini">${r.stages.map(s => icon(s.status)).join('<span class="sep"></span>')}</div></td>
             <td>${duration(r.started_at, r.finished_at)}</td>
-          </tr>`).join("") || `<tr><td colspan="5" class="muted">No runs yet.</td></tr>`}
+            <td><a href="#/files/${esc(r.id)}">files</a></td>
+          </tr>`).join("") || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`}
       </table>
     </section>`;
 
@@ -225,8 +227,13 @@ async function renderRun(id) {
   const sel = run.stages[si].jobs[ji];
   const done = TERMINAL.has(run.status);
 
-  const logEl = document.querySelector("pre.log");
+  // The page is rebuilt every second; remember scroll positions and open sections so they survive.
+  const logEl = document.querySelector("#run [data-scroll^='log-']");
   const stick = !logEl || logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 5;
+  const scrolls = Object.fromEntries([...document.querySelectorAll("#run [data-scroll]")]
+    .map(el => [el.dataset.scroll, [el.scrollTop, el.scrollLeft]]));
+  const openKeys = new Set([...document.querySelectorAll("#run details[open]")].map(d => d.dataset.key));
+  const pageY = window.scrollY;
 
   document.getElementById("run").innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:16px">
@@ -244,7 +251,7 @@ async function renderRun(id) {
              <button class="danger" id="cancel">Cancel</button>`}
       </div>
     </div>
-    <div class="graph">
+    <div class="graph" data-scroll="graph">
       ${run.stages.map((s, a) => `
         <div class="stage">
           <h3>${esc(s.name)}${s.verdict ? `<span class="verdict ${esc(s.verdict)}">${esc(s.verdict)}</span>` : ""}</h3>
@@ -258,10 +265,10 @@ async function renderRun(id) {
               </div>`).join("")}
           </div>
           ${s.files?.length ? `<div class="files" title="files written by this stage">wrote: ${s.files.map(esc).join(", ")}</div>` : ""}
-          ${done && s.status !== "created" ? `<div class="stage-actions" style="margin:8px 0 0"><button data-retry="${a}">Retry stage</button></div>` : ""}
+          ${done && s.status !== "created" ? `<div class="stage-actions" style="margin:8px 0 0"><button data-retry="${a}" title="Rerun this stage and the ones after it with the current (edited) pipeline; earlier stages and files are kept">Rerun from here</button></div>` : ""}
         </div>`).join("")}
     </div>
-    <p class="muted" style="font-size:12px">workdir: ${esc(run.workdir)}</p>
+    <p class="muted" style="font-size:12px">workdir: ${esc(run.workdir)} · <a href="#/files/${esc(run.id)}">browse files</a></p>
     <section style="margin-top:24px">
       <h2>${esc(run.stages[si].name)} / ${esc(sel.name)} ${badge(sel.status)}${sel.agent ? `<span class="tag" style="font-size:12px;margin-left:6px">agent: ${esc(sel.agent)}</span>` : ""}${sel.skill ? `<span class="tag" style="font-size:12px;margin-left:6px">skill: ${esc(sel.skill)}</span>` : ""}${sel.verdict ? `<span class="verdict ${esc(sel.verdict)}">${esc(sel.verdict)}</span>` : ""}
         ${sel.exit_code !== null ? `<span class="muted" style="font-size:12px">exit code ${esc(sel.exit_code)}</span>` : ""}</h2>
@@ -279,12 +286,17 @@ async function renderRun(id) {
           </div>
         </div>` : sel.resume_cmd ? `
         <p class="muted" style="font-size:12px">session: <code>${esc(sel.resume_cmd)}</code> <button data-copy="${esc(sel.resume_cmd)}">Copy</button></p>` : ""}
-      <pre class="log">${esc(sel.log) || `<span class="muted">${sel.status === "running" ? "waiting for output…" : "no output"}</span>`}</pre>
-      <details><summary class="muted">${sel.type === "copilot" ? "prompt sent (incl. earlier stage results)" : "script"}</summary><pre class="log">${esc(sel.type === "copilot" ? (sel.prompt_sent ?? sel.prompt) : sel.script)}</pre></details>
+      <pre class="log" data-scroll="log-${si}-${ji}">${esc(sel.log) || `<span class="muted">${sel.status === "running" ? "waiting for output…" : "no output"}</span>`}</pre>
+      <details data-key="prompt"><summary class="muted">${sel.type === "copilot" ? "prompt sent (incl. earlier stage results)" : "script"}</summary><pre class="log" data-scroll="prompt-${si}-${ji}">${esc(sel.type === "copilot" ? (sel.prompt_sent ?? sel.prompt) : sel.script)}</pre></details>
     </section>`;
 
-  const newLog = document.querySelector("pre.log");
-  if (stick) newLog.scrollTop = newLog.scrollHeight;
+  document.querySelectorAll("#run details[data-key]").forEach(d => d.open = openKeys.has(d.dataset.key));
+  document.querySelectorAll("#run [data-scroll]").forEach(el => {
+    if (scrolls[el.dataset.scroll]) [el.scrollTop, el.scrollLeft] = scrolls[el.dataset.scroll];
+  });
+  const newLog = document.querySelector("#run [data-scroll^='log-']");
+  if (stick || !(newLog.dataset.scroll in scrolls)) newLog.scrollTop = newLog.scrollHeight;
+  window.scrollTo(window.scrollX, pageY);
 
   document.querySelectorAll("[data-sel]").forEach(el => el.onclick = () => {
     selectedJob = el.dataset.sel.split(",").map(Number);
@@ -322,6 +334,46 @@ async function renderRun(id) {
 
   clearTimeout(pollTimer);
   if (!done) pollTimer = setTimeout(() => renderRun(id), 1000);
+}
+
+// ------------------------------------------------------------ run files
+const fileUrl = (id, path) => `/api/runs/${encodeURIComponent(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+async function showFiles(id, selected) {
+  let data;
+  try { data = await api("GET", `/api/runs/${encodeURIComponent(id)}/files`); }
+  catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  if (location.hash !== `#/files/${id}`) return;
+  selected ??= data.files[0]?.path;
+  const sel = data.files.find(f => f.path === selected);
+
+  app.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin:0">Files of run <a href="#/run/${esc(id)}">#${esc(id)}</a></h2>
+      <a href="#/">← back</a>
+    </div>
+    <p class="muted" style="font-size:12px">${esc(data.workdir)}</p>
+    ${data.files.length ? `
+      <div style="display:flex;gap:16px;align-items:flex-start">
+        <table style="width:auto;min-width:280px">
+          ${data.files.map(f => `
+            <tr><td><a href="#" data-file="${esc(f.path)}" style="${f.path === selected ? "font-weight:700" : ""}">${esc(f.path)}</a></td>
+                <td class="muted" style="white-space:nowrap">${fmtSize(f.size)}</td></tr>`).join("")}
+        </table>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="justify-content:space-between"><b>${esc(sel.path)}</b>
+            <a href="${fileUrl(id, sel.path)}" target="_blank" rel="noopener">open raw</a></div>
+          <pre class="log" id="filebody" style="max-height:none">loading…</pre>
+        </div>
+      </div>` : `<p class="muted">No files yet.</p>`}`;
+
+  app.querySelectorAll("[data-file]").forEach(a => a.onclick = e => { e.preventDefault(); showFiles(id, a.dataset.file); });
+  if (!sel) return;
+  const body = document.getElementById("filebody");
+  if (sel.size > 1048576) { body.textContent = "File is larger than 1 MB; use “open raw”."; return; }
+  const text = await fetch(fileUrl(id, sel.path)).then(r => r.ok ? r.text() : `error: ${r.status}`);
+  body.textContent = text.includes("\0") ? "Binary file; use “open raw”." : text || "(empty file)";
 }
 
 // ------------------------------------------------------------ editor

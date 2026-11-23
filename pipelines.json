@@ -50,5 +50,107 @@
       }
     ],
     "id": "5819e9cf"
+  },
+  {
+    "name": "simple",
+    "workdir": "",
+    "stages": [
+      {
+        "name": "build",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "python",
+            "script": "import time\nprint('working...')\ntime.sleep(2)\nprint('done')",
+            "prompt": ""
+          }
+        ]
+      },
+      {
+        "name": "random",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "python",
+            "script": "# stage \"random\", job \"job1\"\nimport random\nprint(random.randint(0, 100))",
+            "prompt": ""
+          }
+        ]
+      },
+      {
+        "name": "test",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "python",
+            "script": "import os\n\nvalue = int(os.environ[\"FACTORY_OUT_RANDOM_JOB1\"].strip().splitlines()[-1])\nprint(f\"got {value}\")\n\nif value % 2 == 0:\n    raise Exception(\"Expected odd\")",
+            "prompt": ""
+          }
+        ]
+      }
+    ],
+    "id": "02e487b8"
+  },
+  {
+    "name": "dri-automation",
+    "workdir": "",
+    "stages": [
+      {
+        "name": "intent",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "implement dri-automation test tool\n\n1. Use pycollectv6 as standalone library\n2. Implement plugin to subscribe to data of pycollectv6\n3. A python xml rpc server reponds to client request\n4. Whole tool is packaged in a container"
+          }
+        ]
+      },
+      {
+        "name": "grill",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "/aidlc-analysis grill me about the requirements "
+          }
+        ]
+      },
+      {
+        "name": "tdd",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "/aidlc-implementation implement tdd architecture"
+          }
+        ]
+      },
+      {
+        "name": "spec",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "/aidlc-implementation-docs write specification and design document"
+          }
+        ]
+      },
+      {
+        "name": "implement",
+        "jobs": [
+          {
+            "name": "job1",
+            "type": "copilot",
+            "script": "import time\nprint('working...')\ntime.sleep(5)\nprint('done')",
+            "prompt": "/aidlc-implementation implement based on spec"
+          }
+        ]
+      }
+    ],
+    "id": "740edbdd"
   }
 ]
