@@ -228,7 +228,7 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
     job["status"] = "success" if job["verdict"] == APPROVED else "failed"
 
 
-async def execute_run(run: dict) -> None:
+async def execute_run(run: dict, start: int = 0) -> None:
     run["status"] = "running"
     run["started_at"] = time.time()
     workdir = Path(run["workdir"])
@@ -236,6 +236,8 @@ async def execute_run(run: dict) -> None:
     failed = False
 
     for i, stage in enumerate(run["stages"]):
+        if i < start:
+            continue
         if run["status"] == "canceled":
             break
         if failed:
@@ -280,6 +282,12 @@ async def execute_run(run: dict) -> None:
     save_run(run)
 
 
+def start_run_task(run: dict, start: int = 0) -> None:
+    task = asyncio.create_task(execute_run(run, start))
+    RUN_TASKS.add(task)
+    task.add_done_callback(RUN_TASKS.discard)
+
+
 def create_run(pipeline: Pipeline) -> dict:
     run_id = uuid.uuid4().hex[:8]
     run = {
@@ -295,9 +303,7 @@ def create_run(pipeline: Pipeline) -> dict:
     }
     RUNS[run_id] = run
     save_run(run)
-    task = asyncio.create_task(execute_run(run))
-    RUN_TASKS.add(task)
-    task.add_done_callback(RUN_TASKS.discard)
+    start_run_task(run)
     return run
 
 
@@ -397,6 +403,32 @@ def cancel_run(rid: str) -> dict:
         if proc.returncode is None:
             signal_group(proc, signal.SIGKILL)
     save_run(run)
+    return run
+
+
+@app.post("/api/runs/{rid}/stages/{si}/retry")
+async def retry_stage(rid: str, si: int) -> dict:
+    run = RUNS.get(rid)
+    if run is None:
+        raise HTTPException(404, "run not found")
+    if not 0 <= si < len(run["stages"]):
+        raise HTTPException(404, "stage not found")
+    if run["status"] not in TERMINAL:
+        raise HTTPException(409, f"run is {run['status']}, can only retry a finished run")
+
+    pipeline = PIPELINES.get(run["pipeline_id"])
+    if pipeline is None:
+        raise HTTPException(409, "the pipeline was deleted")
+    stage_names = [stage.name for stage in pipeline.stages]
+    stage_name = run["stages"][si]["name"]
+    if stage_name not in stage_names:
+        raise HTTPException(409, f"stage '{stage_name}' is no longer in the pipeline")
+
+    pipeline_index = stage_names.index(stage_name)
+    run["stages"][si:] = [new_stage(stage) for stage in pipeline.stages[pipeline_index:]]
+    run.update(status="running", finished_at=None, pipeline_name=pipeline.name)
+    save_run(run)
+    start_run_task(run, si)
     return run
 
 

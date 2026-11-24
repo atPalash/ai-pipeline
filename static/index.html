@@ -65,10 +65,14 @@
     .status-dot.pending, .status-dot.created, .status-dot.skipped { background: var(--amber); }
     .pipeline-graph { position: relative; display: flex; gap: 48px; overflow-x: auto; padding: 24px; border: 1px solid var(--border); border-radius: 4px; background: #fafafd; }
     .pipeline-connectors { position: absolute; inset: 0; z-index: 0; overflow: visible; pointer-events: none; }
-    .pipeline-stage { position: relative; z-index: 1; min-width: 220px; }
-    .pipeline-stage h2 { margin-bottom: 12px; font-size: 14px; }
-    .pipeline-job { height: 36px; box-sizing: border-box; margin: 8px 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 18px; background: #fff; display: flex; align-items: center; gap: 8px; }
+    .pipeline-stage { position: relative; z-index: 1; min-width: 220px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+    .pipeline-stage h2 { min-height: 42px; box-sizing: border-box; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px; }
+    .pipeline-job { min-height: 42px; box-sizing: border-box; padding: 6px 12px; display: flex; align-items: center; gap: 8px; }
+    .pipeline-job + .pipeline-job { border-top: 1px solid #f0f0f0; }
     .job-type { margin-left: auto; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .retry-icon { width: 28px; height: 28px; min-height: 28px; flex: 0 0 28px; padding: 5px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+    .retry-icon svg { width: 16px; height: 16px; fill: currentColor; }
+    .retry-icon:hover { color: var(--blue); border-color: var(--blue); background: #f0f6fc; }
     .run-breadcrumb { margin-bottom: 16px; font-size: 13px; color: var(--muted); }
     details { border: 1px solid var(--border); border-radius: 4px; margin: 8px 0; background: #fff; }
     summary { padding: 10px 12px; cursor: pointer; font-weight: 600; }
@@ -275,14 +279,18 @@
           </div>
         </div>
         <div class="pipeline-graph">
-          ${run.stages.map(stage => `
+          ${run.stages.map((stage, si) => `
             <div class="pipeline-stage">
-              <h2>${esc(stage.name)} ${status(stage.status)}</h2>
+              <h2><span>${esc(stage.name)}</span>${status(stage.status)}</h2>
               ${stage.jobs.map(job => `
                 <div class="pipeline-job">
                   <span class="status-dot ${esc(job.status)}"></span>
                   <b>${esc(job.name)}</b>
                   <span class="job-type">${esc(job.type)}</span>
+                  ${["success", "failed", "canceled"].includes(run.status) && stage.status !== "created"
+                    ? `<button class="retry-icon" data-retry="${si}" title="Rerun this stage and later stages" aria-label="Rerun ${esc(job.name)} and later stages">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.76-4.24L13 11h7V4l-2.35 2.35z"/></svg>
+                      </button>` : ""}
                 </div>`).join("")}
             </div>`).join("")}
         </div>
@@ -302,6 +310,15 @@
       document.getElementById("cancel")?.addEventListener("click", async () => {
         await api("POST", `/api/runs/${id}/cancel`);
         showRun(id);
+      });
+      app.querySelectorAll("[data-retry]").forEach(button => button.onclick = async () => {
+        if (!confirm("Rerun this stage and later stages in the same pipeline?")) return;
+        try {
+          await api("POST", `/api/runs/${id}/stages/${button.dataset.retry}/retry`);
+          await showRun(id);
+        } catch (error) {
+          alert(`Could not rerun stage: ${error.message}`);
+        }
       });
       if (!["success", "failed", "canceled"].includes(run.status))
         timer = setTimeout(() => showRun(id), 1000);
