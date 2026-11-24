@@ -198,6 +198,7 @@
                   <td><div class="actions">
                     <button class="primary" data-run="${esc(p.id)}">Run pipeline</button>
                     <button data-edit="${esc(p.id)}">Edit</button>
+                    <button data-duplicate="${esc(p.id)}">Duplicate</button>
                     <button class="danger" data-delete="${esc(p.id)}">Delete</button>
                   </div></td>
                 </tr>`).join("") || `<tr><td colspan="4" class="empty">No pipelines.</td></tr>`}</tbody>
@@ -226,6 +227,17 @@
       });
       app.querySelectorAll("[data-edit]").forEach(button => button.onclick = () =>
         location.hash = `#/edit/${button.dataset.edit}`);
+      app.querySelectorAll("[data-duplicate]").forEach(button => button.onclick = async () => {
+        const source = pipelines.find(p => p.id === button.dataset.duplicate);
+        const copy = { ...source, name: `${source.name} copy` };
+        delete copy.id;
+        try {
+          await api("POST", "/api/pipelines", copy);
+          await showHome();
+        } catch (error) {
+          alert(`Could not duplicate pipeline: ${error.message}`);
+        }
+      });
       app.querySelectorAll("[data-delete]").forEach(button => button.onclick = async () => {
         if (!confirm("Delete this pipeline?")) return;
         await api("DELETE", `/api/pipelines/${button.dataset.delete}`);
