@@ -67,8 +67,11 @@
     .pipeline-connectors { position: absolute; inset: 0; z-index: 0; overflow: visible; pointer-events: none; }
     .pipeline-stage { position: relative; z-index: 1; min-width: 220px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
     .pipeline-stage h2 { min-height: 42px; box-sizing: border-box; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px; }
-    .pipeline-job { min-height: 42px; box-sizing: border-box; padding: 6px 12px; display: flex; align-items: center; gap: 8px; }
+    .pipeline-job { min-height: 42px; box-sizing: border-box; padding: 4px 8px; display: flex; align-items: center; gap: 6px; }
     .pipeline-job + .pipeline-job { border-top: 1px solid #f0f0f0; }
+    .job-select { min-width: 0; min-height: 32px; flex: 1; padding: 5px 4px; border: 0; background: transparent; display: flex; align-items: center; gap: 8px; text-align: left; }
+    .job-select:hover, .job-select.selected { background: #f0f6fc; }
+    .job-select b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .job-type { margin-left: auto; color: var(--muted); font-size: 11px; text-transform: uppercase; }
     .retry-icon { width: 28px; height: 28px; min-height: 28px; flex: 0 0 28px; padding: 5px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
     .retry-icon svg { width: 16px; height: 16px; fill: currentColor; }
@@ -101,6 +104,8 @@
     let timer;
     let draft;
     let connectorGraph;
+    let selectedRunId;
+    let selectedJob;
 
     const esc = value => String(value ?? "").replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -269,6 +274,13 @@
       try { run = await api("GET", `/api/runs/${id}`); }
       catch (error) { app.innerHTML = `<p class="error">${esc(error.message)}</p>`; return; }
       if (location.hash !== `#/run/${id}`) return;
+      if (selectedRunId !== id) {
+        selectedRunId = id;
+        selectedJob = null;
+      }
+      if (selectedJob && !run.stages[selectedJob[0]]?.jobs[selectedJob[1]]) selectedJob = null;
+      const selectedStage = selectedJob ? run.stages[selectedJob[0]] : null;
+      const selected = selectedJob ? selectedStage.jobs[selectedJob[1]] : null;
 
       app.innerHTML = `
         <div class="run-breadcrumb"><a href="#/">Pipelines</a> / ${esc(run.pipeline_name)}</div>
@@ -282,11 +294,13 @@
           ${run.stages.map((stage, si) => `
             <div class="pipeline-stage">
               <h2><span>${esc(stage.name)}</span>${status(stage.status)}</h2>
-              ${stage.jobs.map(job => `
+              ${stage.jobs.map((job, ji) => `
                 <div class="pipeline-job">
-                  <span class="status-dot ${esc(job.status)}"></span>
-                  <b>${esc(job.name)}</b>
-                  <span class="job-type">${esc(job.type)}</span>
+                  <button class="job-select ${selectedJob?.[0] === si && selectedJob?.[1] === ji ? "selected" : ""}" data-job="${si},${ji}" aria-label="Show output for ${esc(job.name)}">
+                    <span class="status-dot ${esc(job.status)}"></span>
+                    <b>${esc(job.name)}</b>
+                    <span class="job-type">${esc(job.type)}</span>
+                  </button>
                   ${["success", "failed", "canceled"].includes(run.status) && stage.status !== "created"
                     ? `<button class="retry-icon" data-retry="${si}" title="Rerun this stage and later stages" aria-label="Rerun ${esc(job.name)} and later stages">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.76-4.24L13 11h7V4l-2.35 2.35z"/></svg>
@@ -294,19 +308,24 @@
                 </div>`).join("")}
             </div>`).join("")}
         </div>
-        ${run.stages.map(stage => `
+        ${selected ? `
           <section>
-            <h2>${esc(stage.name)}</h2>
-            ${stage.jobs.map(job => `
-              <details open>
-                <summary>${esc(job.name)} · ${status(job.status)} · ${esc(job.type)}</summary>
-                <pre class="log">${esc(job.log) || "(no output)"}</pre>
-              </details>`).join("")}
-          </section>`).join("")}`;
+            <div class="panel">
+              <div class="panel-header">
+                <h2>${esc(selectedStage.name)} / ${esc(selected.name)}</h2>
+                ${status(selected.status)}
+              </div>
+              <pre class="log">${esc(selected.log) || (selected.status === "running" ? "Waiting for output…" : "(no output)")}</pre>
+            </div>
+          </section>` : `<p class="empty">Select a job above to view its output.</p>`}`;
 
       connectorGraph = app.querySelector(".pipeline-graph");
       drawPipelineConnectors();
 
+      app.querySelectorAll("[data-job]").forEach(button => button.onclick = () => {
+        selectedJob = button.dataset.job.split(",").map(Number);
+        showRun(id);
+      });
       document.getElementById("cancel")?.addEventListener("click", async () => {
         await api("POST", `/api/runs/${id}/cancel`);
         showRun(id);
