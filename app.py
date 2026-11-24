@@ -18,6 +18,8 @@ BASE_DIR = Path(__file__).parent
 DATA_FILE = BASE_DIR / "pipelines.json"
 RUNS_DIR = BASE_DIR / "runs"
 COPILOT_CMD = os.environ.get("COPILOT_CMD", "copilot")
+COPILOT_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+MAX_COPILOT_RETRIES = 3
 TERMINAL = {"success", "failed", "canceled"}
 
 APPROVED = "APPROVED"
@@ -30,6 +32,11 @@ End your reply with exactly one of these lines:
 STATUS: {APPROVED} - the task is done
 STATUS: {REJECTED} - the task cannot be done or is unacceptable
 Do not invent results or work around denied access.
+"""
+TOOL_RETRY_INSTRUCTIONS = """
+
+For failed tool actions, make no more than 3 retries total. After the third retry,
+stop and report the blocker instead of trying more commands or workarounds.
 """
 
 
@@ -183,10 +190,17 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
     job["started_at"] = time.time()
 
     if job["type"] == "copilot":
-        prompt = job["prompt"] + STATUS_INSTRUCTIONS
+        prompt = job["prompt"] + TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
         if context:
             prompt += "\n\nResults from earlier stages:\n\n" + context
-        argv = [COPILOT_CMD, "-p", prompt, "--allow-all-tools"]
+        argv = [
+            COPILOT_CMD,
+            "--model",
+            COPILOT_MODEL,
+            "-p",
+            prompt,
+            "--allow-all-tools",
+        ]
     else:
         argv = [sys.executable, "-u", "-c", job["script"]]
 
@@ -196,35 +210,51 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
         "FACTORY_WORKDIR": run["workdir"],
         **outputs,
     }
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=run["workdir"],
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        job["log"] = f"failed to start {argv[0]}: {exc}\n"
-        job["status"] = "failed"
-        job["verdict"] = FAILED
-        job["finished_at"] = time.time()
-        return
+    max_attempts = MAX_COPILOT_RETRIES + 1 if job["type"] == "copilot" else 1
+    for attempt in range(max_attempts):
+        if run["status"] == "canceled":
+            job["status"] = "canceled"
+            job["finished_at"] = time.time()
+            return
+        if attempt:
+            job["log"] += f"\n--- Copilot retry {attempt}/{MAX_COPILOT_RETRIES} ---\n"
+        attempt_log = ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=run["workdir"],
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            attempt_log = f"failed to start {argv[0]}: {exc}\n"
+            job["log"] += attempt_log
+            job["verdict"] = FAILED
+            job["finished_at"] = time.time()
+            job["status"] = "failed"
+            return
 
-    procs = RUN_PROCS.setdefault(run["id"], set())
-    procs.add(proc)
-    async for line in proc.stdout:
-        job["log"] += line.decode(errors="replace")
-    rc = await proc.wait()
-    procs.discard(proc)
-    job["exit_code"] = rc
+        procs = RUN_PROCS.setdefault(run["id"], set())
+        procs.add(proc)
+        async for line in proc.stdout:
+            decoded = line.decode(errors="replace")
+            attempt_log += decoded
+            job["log"] += decoded
+        rc = await proc.wait()
+        procs.discard(proc)
+        job["exit_code"] = rc
+
+        if run["status"] == "canceled":
+            job["status"] = "canceled"
+            job["finished_at"] = time.time()
+            return
+        attempt_result = {**job, "exit_code": rc, "log": attempt_log}
+        job["verdict"] = job_verdict(attempt_result)
+        if job["type"] != "copilot" or job["verdict"] != FAILED:
+            break
     job["finished_at"] = time.time()
-
-    if run["status"] == "canceled":
-        job["status"] = "canceled"
-        return
-    job["verdict"] = job_verdict(job)
     job["status"] = "success" if job["verdict"] == APPROVED else "failed"
 
 

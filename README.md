@@ -9,6 +9,8 @@ pip install -r requirements.txt
 ```
 
 Requires Python 3 with the packages above and, for `copilot` jobs, the Copilot CLI on `PATH` (or set `COPILOT_CMD`).
+Copilot jobs select the OpenRouter model `deepseek/deepseek-v4.1-flash-1017`; configure the CLI's OpenRouter provider credentials before running them. OpenRouter charges for usage.
+Copilot calls that exit unsuccessfully or omit a required status are retried up to 3 times (4 calls total); an explicit `STATUS: REJECTED` is not retried. Copilot is also instructed to stop after 3 failed tool retries within a call, but that instruction is advisory.
 
 ## Usage
 
