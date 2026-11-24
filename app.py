@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 import re
@@ -354,6 +355,27 @@ async def run_pipeline(pid: str) -> dict:
 @app.get("/api/runs")
 def list_runs() -> list[dict]:
     return sorted(RUNS.values(), key=lambda run: run["created_at"], reverse=True)
+
+
+@app.delete("/api/runs")
+def clear_runs() -> dict[str, int]:
+    runs_dir = RUNS_DIR.resolve()
+    cleared = 0
+    for run_id, run in list(RUNS.items()):
+        if run["status"] not in TERMINAL:
+            continue
+        run_dir = (RUNS_DIR / run_id).resolve()
+        if runs_dir not in run_dir.parents:
+            raise HTTPException(500, f"invalid run directory for '{run_id}'")
+        try:
+            (run_dir / "run.json").unlink(missing_ok=True)
+            run_dir.rmdir()
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):
+                raise
+        del RUNS[run_id]
+        cleared += 1
+    return {"deleted": cleared}
 
 
 @app.get("/api/runs/{rid}")

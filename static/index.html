@@ -208,7 +208,10 @@
         </section>
         <section>
           <div class="panel">
-            <div class="panel-header"><h2>Recent runs</h2></div>
+            <div class="panel-header">
+              <h2>Recent runs</h2>
+              <button class="danger" id="clear-runs" ${runs.some(r => ["success", "failed", "canceled"].includes(r.status)) ? "" : "disabled"}>Clear completed runs</button>
+            </div>
             <table>
               <thead><tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th></tr></thead>
               <tbody>${runs.map(r => `
@@ -244,6 +247,15 @@
         await api("DELETE", `/api/pipelines/${button.dataset.delete}`);
         showHome();
       });
+      document.getElementById("clear-runs").onclick = async () => {
+        if (!confirm("Clear completed run history? Active runs and workspaces will be kept.")) return;
+        try {
+          await api("DELETE", "/api/runs");
+          await showHome();
+        } catch (error) {
+          alert(`Could not clear runs: ${error.message}`);
+        }
+      };
       if (runs.some(r => !["success", "failed", "canceled"].includes(r.status)))
         timer = setTimeout(showHome, 1000);
     }
