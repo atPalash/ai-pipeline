@@ -5,37 +5,157 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Factory Pipelines</title>
   <style>
-    :root { font-family: system-ui, sans-serif; color: #222; background: #fff; }
+    :root {
+      --bg: #fdfdfe;
+      --surface: #fff;
+      --border: #dcdcde;
+      --text: #28272d;
+      --muted: #737278;
+      --brand: #fc6d26;
+      --blue: #1f75cb;
+      --green: #108548;
+      --red: #dd2b0e;
+      --amber: #ab6100;
+    }
+    :root { font-family: -apple-system, BlinkMacBlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); }
     body { margin: 0; }
-    header { padding: 12px 20px; border-bottom: 1px solid #ddd; font-weight: 700; }
-    main { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+    header { height: 48px; box-sizing: border-box; padding: 0 16px; border-bottom: 1px solid #3b3a40; background: #29282d; color: #fff; display: flex; align-items: center; gap: 12px; }
+    header .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; cursor: pointer; }
+    header .brand-mark { width: 24px; height: 24px; border-radius: 5px; background: var(--brand); display: grid; place-items: center; color: #fff; font-size: 14px; }
+    header .path { color: #c3c2c7; font-size: 13px; }
+    main { max-width: 1180px; margin: 24px auto; padding: 0 24px; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 18px; }
     h1, h2, h3 { margin-top: 0; }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    section { margin-bottom: 24px; }
+    .panel { border: 1px solid var(--border); border-radius: 4px; background: var(--surface); margin-bottom: 16px; }
+    .panel-header { min-height: 48px; box-sizing: border-box; padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .panel-header h2 { margin: 0; font-size: 16px; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 8px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+    th, td { padding: 10px 16px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+    th { color: var(--muted); background: #fafafd; font-size: 12px; font-weight: 600; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover td { background: #fafafd; }
     button, input, textarea, select { font: inherit; }
-    button { padding: 6px 10px; cursor: pointer; }
-    input, textarea, select { box-sizing: border-box; padding: 6px; width: 100%; }
-    textarea { min-height: 90px; font-family: monospace; }
+    button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--border); border-radius: 4px; background: #fff; color: var(--text); cursor: pointer; }
+    button:hover { background: #f0f0f0; }
+    button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+    button.primary:hover { background: #1068bf; }
+    button.danger { color: var(--red); border-color: #f0a7a0; }
+    input, textarea, select { box-sizing: border-box; padding: 7px 8px; width: 100%; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+    input:focus, textarea:focus, select:focus { outline: 2px solid #a5c8ed; border-color: var(--blue); }
+    textarea { min-height: 100px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     .row { display: flex; gap: 8px; align-items: center; }
+    .actions { display: flex; justify-content: flex-end; gap: 6px; }
     .space { display: flex; justify-content: space-between; align-items: center; }
-    .muted { color: #777; }
-    .error { color: #b00020; }
-    .stages { display: flex; gap: 12px; overflow-x: auto; }
-    .stage { min-width: 280px; border: 1px solid #ddd; border-radius: 4px; padding: 12px; }
-    .job { border-top: 1px solid #eee; margin-top: 8px; padding-top: 8px; }
-    .log { background: #191919; color: #eee; padding: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+    .muted { color: var(--muted); }
+    .error { color: var(--red); }
+    .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #a4a3a8; }
+    .status.success .status-dot { background: var(--green); }
+    .status.failed .status-dot, .status.rejected .status-dot, .status.canceled .status-dot { background: var(--red); }
+    .status.running .status-dot { background: var(--blue); box-shadow: 0 0 0 3px #d9ebfa; }
+    .status.pending .status-dot, .status.created .status-dot, .status.skipped .status-dot { background: var(--amber); }
+    .status-dot.success { background: var(--green); }
+    .status-dot.failed, .status-dot.rejected, .status-dot.canceled { background: var(--red); }
+    .status-dot.running { background: var(--blue); box-shadow: 0 0 0 3px #d9ebfa; }
+    .status-dot.pending, .status-dot.created, .status-dot.skipped { background: var(--amber); }
+    .pipeline-graph { position: relative; display: flex; gap: 48px; overflow-x: auto; padding: 24px; border: 1px solid var(--border); border-radius: 4px; background: #fafafd; }
+    .pipeline-connectors { position: absolute; inset: 0; z-index: 0; overflow: visible; pointer-events: none; }
+    .pipeline-stage { position: relative; z-index: 1; min-width: 220px; }
+    .pipeline-stage h2 { margin-bottom: 12px; font-size: 14px; }
+    .pipeline-job { height: 36px; box-sizing: border-box; margin: 8px 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 18px; background: #fff; display: flex; align-items: center; gap: 8px; }
+    .job-type { margin-left: auto; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .run-breadcrumb { margin-bottom: 16px; font-size: 13px; color: var(--muted); }
+    details { border: 1px solid var(--border); border-radius: 4px; margin: 8px 0; background: #fff; }
+    summary { padding: 10px 12px; cursor: pointer; font-weight: 600; }
+    details[open] summary { border-bottom: 1px solid var(--border); }
+    .log { background: #1f1e24; color: #ececef; margin: 0; padding: 12px; max-height: 360px; overflow: auto; white-space: pre-wrap; border-radius: 0 0 4px 4px; }
+    .stages { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; }
+    .editor-stage { min-width: 300px; border: 1px solid var(--border); border-radius: 4px; background: #fafafd; padding: 12px; }
+    .editor-stage .stage-title { margin-bottom: 10px; }
+    .editor-job { border: 1px solid var(--border); border-radius: 4px; background: #fff; margin: 8px 0; padding: 10px; }
+    .editor-job > * { margin-top: 6px; }
+    .editor-job .row { margin-top: 0; }
+    .editor-actions { margin-top: 10px; display: flex; gap: 6px; }
+    .field { margin: 10px 0; }
+    .field label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
+    .empty { padding: 24px 16px; color: var(--muted); text-align: center; }
   </style>
 </head>
 <body>
-  <header>Factory Pipelines</header>
+  <header>
+    <div class="brand" onclick="location.hash='#/'"><span class="brand-mark">F</span><span>Factory</span></div>
+    <span class="path">Pipelines</span>
+  </header>
   <main id="app"></main>
   <script>
     const app = document.getElementById("app");
     let timer;
     let draft;
+    let connectorGraph;
 
     const esc = value => String(value ?? "").replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const status = value => `<span class="status ${esc(value)}"><span class="status-dot"></span>${esc(value)}</span>`;
+
+    function drawPipelineConnectors() {
+      const graph = connectorGraph;
+      if (!graph?.isConnected) return;
+
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNS, "svg");
+      const width = graph.scrollWidth;
+      const height = graph.scrollHeight;
+      const graphRect = graph.getBoundingClientRect();
+      const xOffset = graphRect.left + graph.clientLeft - graph.scrollLeft;
+      const yOffset = graphRect.top + graph.clientTop - graph.scrollTop;
+      svg.setAttribute("class", "pipeline-connectors");
+      svg.setAttribute("width", width);
+      svg.setAttribute("height", height);
+      svg.style.width = `${width}px`;
+      svg.style.height = `${height}px`;
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("aria-hidden", "true");
+
+      const path = document.createElementNS(svgNS, "path");
+      const segments = [];
+      const stages = [...graph.querySelectorAll(".pipeline-stage")];
+      stages.slice(0, -1).forEach((stage, index) => {
+        const next = stages[index + 1];
+        const sourceJobs = [...stage.querySelectorAll(".pipeline-job")];
+        const targetJobs = [...next.querySelectorAll(".pipeline-job")];
+        if (!sourceJobs.length || !targetJobs.length) return;
+
+        const stageRect = stage.getBoundingClientRect();
+        const nextRect = next.getBoundingClientRect();
+        const railX = (stageRect.right + nextRect.left) / 2 - xOffset;
+        const sourcePoints = sourceJobs.map(job => {
+          const rect = job.getBoundingClientRect();
+          return { x: rect.right - xOffset, y: (rect.top + rect.bottom) / 2 - yOffset };
+        });
+        const targetPoints = targetJobs.map(job => {
+          const rect = job.getBoundingClientRect();
+          return { x: rect.left - xOffset, y: (rect.top + rect.bottom) / 2 - yOffset };
+        });
+        const points = [...sourcePoints, ...targetPoints];
+        segments.push(`M ${railX} ${Math.min(...points.map(point => point.y))} V ${Math.max(...points.map(point => point.y))}`);
+        sourcePoints.forEach(point => segments.push(`M ${point.x} ${point.y} H ${railX}`));
+        targetPoints.forEach(point => segments.push(`M ${railX} ${point.y} H ${point.x}`));
+      });
+
+      path.setAttribute("d", segments.join(" "));
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "#cfcfd3");
+      path.setAttribute("stroke-width", "2");
+      svg.append(path);
+      graph.querySelector(".pipeline-connectors")?.remove();
+      graph.prepend(svg);
+    }
+
+    window.addEventListener("resize", drawPipelineConnectors);
 
     async function api(method, url, body) {
       const response = await fetch(url, {
@@ -65,34 +185,39 @@
       const [pipelines, runs] = await Promise.all([api("GET", "/api/pipelines"), api("GET", "/api/runs")]);
       app.innerHTML = `
         <section>
-          <div class="space"><h1>Pipelines</h1><button onclick="location.hash='#/new'">New pipeline</button></div>
-          <table>
-            <tr><th>Name</th><th>Stages</th><th>Jobs</th><th></th></tr>
-            ${pipelines.map(p => `
-              <tr>
-                <td><b>${esc(p.name)}</b> <span class="muted">#${esc(p.id)}</span></td>
-                <td>${p.stages.map(s => esc(s.name)).join(" → ")}</td>
-                <td>${p.stages.reduce((n, s) => n + s.jobs.length, 0)}</td>
-                <td>
-                  <button data-run="${esc(p.id)}">Run</button>
-                  <button data-edit="${esc(p.id)}">Edit</button>
-                  <button data-delete="${esc(p.id)}">Delete</button>
-                </td>
-              </tr>`).join("") || `<tr><td colspan="4" class="muted">No pipelines.</td></tr>`}
-          </table>
+          <div class="space"><h1>Pipelines</h1><button class="primary" onclick="location.hash='#/new'">New pipeline</button></div>
+          <div class="panel">
+            <div class="panel-header"><h2>Project pipelines</h2><span class="muted">${pipelines.length} configured</span></div>
+            <table>
+              <thead><tr><th>Name</th><th>Stages</th><th>Jobs</th><th></th></tr></thead>
+              <tbody>${pipelines.map(p => `
+                <tr>
+                  <td><b>${esc(p.name)}</b> <span class="muted">#${esc(p.id)}</span></td>
+                  <td>${p.stages.map(s => esc(s.name)).join(" → ")}</td>
+                  <td>${p.stages.reduce((n, s) => n + s.jobs.length, 0)}</td>
+                  <td><div class="actions">
+                    <button class="primary" data-run="${esc(p.id)}">Run pipeline</button>
+                    <button data-edit="${esc(p.id)}">Edit</button>
+                    <button class="danger" data-delete="${esc(p.id)}">Delete</button>
+                  </div></td>
+                </tr>`).join("") || `<tr><td colspan="4" class="empty">No pipelines.</td></tr>`}</tbody>
+            </table>
+          </div>
         </section>
         <section>
-          <h2>Runs</h2>
-          <table>
-            <tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th></tr>
-            ${runs.map(r => `
-              <tr>
-                <td>${esc(r.status)}</td>
-                <td><a href="#/run/${esc(r.id)}">#${esc(r.id)}</a></td>
-                <td>${esc(r.pipeline_name)}</td>
-                <td>${r.stages.map(s => esc(s.status)).join(" → ")}</td>
-              </tr>`).join("") || `<tr><td colspan="4" class="muted">No runs.</td></tr>`}
-          </table>
+          <div class="panel">
+            <div class="panel-header"><h2>Recent runs</h2></div>
+            <table>
+              <thead><tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th></tr></thead>
+              <tbody>${runs.map(r => `
+                <tr>
+                  <td>${status(r.status)}</td>
+                  <td><a href="#/run/${esc(r.id)}">#${esc(r.id)}</a></td>
+                  <td>${esc(r.pipeline_name)}</td>
+                  <td>${r.stages.map(s => status(s.status)).join(" <span class='muted'>→</span> ")}</td>
+                </tr>`).join("") || `<tr><td colspan="4" class="empty">No runs.</td></tr>`}</tbody>
+            </table>
+          </div>
         </section>`;
 
       app.querySelectorAll("[data-run]").forEach(button => button.onclick = async () => {
@@ -117,21 +242,37 @@
       if (location.hash !== `#/run/${id}`) return;
 
       app.innerHTML = `
-        <div class="space">
-          <h1>Run #${esc(run.id)} <span class="muted">· ${esc(run.status)}</span></h1>
-          <div class="row"><a href="#/">Back</a>
-            ${!["success", "failed", "canceled"].includes(run.status) ? `<button id="cancel">Cancel</button>` : ""}
+        <div class="run-breadcrumb"><a href="#/">Pipelines</a> / ${esc(run.pipeline_name)}</div>
+        <div class="space" style="margin-bottom:16px">
+          <div class="row"><h1 style="margin:0">Pipeline #${esc(run.id)}</h1>${status(run.status)}</div>
+          <div class="row"><a href="#/">← Back</a>
+            ${!["success", "failed", "canceled"].includes(run.status) ? `<button class="danger" id="cancel">Cancel pipeline</button>` : ""}
           </div>
+        </div>
+        <div class="pipeline-graph">
+          ${run.stages.map(stage => `
+            <div class="pipeline-stage">
+              <h2>${esc(stage.name)} ${status(stage.status)}</h2>
+              ${stage.jobs.map(job => `
+                <div class="pipeline-job">
+                  <span class="status-dot ${esc(job.status)}"></span>
+                  <b>${esc(job.name)}</b>
+                  <span class="job-type">${esc(job.type)}</span>
+                </div>`).join("")}
+            </div>`).join("")}
         </div>
         ${run.stages.map(stage => `
           <section>
-            <h2>${esc(stage.name)} <span class="muted">· ${esc(stage.status)}</span></h2>
+            <h2>${esc(stage.name)}</h2>
             ${stage.jobs.map(job => `
               <details open>
-                <summary>${esc(job.name)} · ${esc(job.status)} · ${esc(job.type)}</summary>
+                <summary>${esc(job.name)} · ${status(job.status)} · ${esc(job.type)}</summary>
                 <pre class="log">${esc(job.log) || "(no output)"}</pre>
               </details>`).join("")}
           </section>`).join("")}`;
+
+      connectorGraph = app.querySelector(".pipeline-graph");
+      drawPipelineConnectors();
 
       document.getElementById("cancel")?.addEventListener("click", async () => {
         await api("POST", `/api/runs/${id}/cancel`);
@@ -156,35 +297,44 @@
 
     function renderEditor(error) {
       app.innerHTML = `
-        <div class="space">
+        <div class="run-breadcrumb"><a href="#/">Pipelines</a> / ${draft.id ? "Edit pipeline" : "New pipeline"}</div>
+        <div class="space" style="margin-bottom:16px">
           <h1>${draft.id ? "Edit pipeline" : "New pipeline"}</h1>
-          <div class="row"><a href="#/">Cancel</a><button id="save">Save</button></div>
+          <div class="row"><a href="#/">Cancel</a><button class="primary" id="save">Save pipeline</button></div>
         </div>
         ${error ? `<p class="error">${esc(error)}</p>` : ""}
-        <label>Name<input data-name value="${esc(draft.name)}"></label>
-        <label>Working directory (optional)<input data-workdir value="${esc(draft.workdir || "")}" placeholder="/existing/directory"></label>
-        <h2>Stages</h2>
-        <div class="stages">
-          ${draft.stages.map((stage, si) => `
-            <div class="stage">
-              <input data-stage-name="${si}" value="${esc(stage.name)}" placeholder="Stage name">
-              ${stage.jobs.map((job, ji) => `
-                <div class="job">
-                  <input data-job-name="${si},${ji}" value="${esc(job.name)}" placeholder="Job name">
-                  <select data-job-type="${si},${ji}">
-                    <option value="python" ${job.type !== "copilot" ? "selected" : ""}>python</option>
-                    <option value="copilot" ${job.type === "copilot" ? "selected" : ""}>copilot</option>
-                  </select>
-                  ${job.type === "copilot"
-                    ? `<textarea data-prompt="${si},${ji}" placeholder="Copilot prompt">${esc(job.prompt || "")}</textarea>`
-                    : `<textarea data-script="${si},${ji}" placeholder="Python script">${esc(job.script || "")}</textarea>`}
-                  <button data-remove-job="${si},${ji}">Remove job</button>
+        <div class="panel">
+          <div class="panel-header"><h2>Pipeline configuration</h2></div>
+          <div style="padding:16px">
+            <div class="field"><label>Name</label><input data-name value="${esc(draft.name)}"></div>
+            <div class="field"><label>Working directory <span class="muted">(optional)</span></label><input data-workdir value="${esc(draft.workdir || "")}" placeholder="/existing/directory"></div>
+            <div class="stages">
+              ${draft.stages.map((stage, si) => `
+                <div class="editor-stage">
+                  <input class="stage-title" data-stage-name="${si}" value="${esc(stage.name)}" placeholder="Stage name">
+                  ${stage.jobs.map((job, ji) => `
+                    <div class="editor-job">
+                      <div class="row">
+                        <input data-job-name="${si},${ji}" value="${esc(job.name)}" placeholder="Job name">
+                        <select data-job-type="${si},${ji}">
+                          <option value="python" ${job.type !== "copilot" ? "selected" : ""}>python</option>
+                          <option value="copilot" ${job.type === "copilot" ? "selected" : ""}>copilot</option>
+                        </select>
+                      </div>
+                      ${job.type === "copilot"
+                        ? `<textarea data-prompt="${si},${ji}" placeholder="Copilot prompt">${esc(job.prompt || "")}</textarea>`
+                        : `<textarea data-script="${si},${ji}" placeholder="Python script">${esc(job.script || "")}</textarea>`}
+                      <button class="danger" data-remove-job="${si},${ji}">Remove job</button>
+                    </div>`).join("")}
+                  <div class="editor-actions">
+                    <button data-add-job="${si}">Add job</button>
+                    <button class="danger" data-remove-stage="${si}">Remove stage</button>
+                  </div>
                 </div>`).join("")}
-              <button data-add-job="${si}">Add job</button>
-              <button data-remove-stage="${si}">Remove stage</button>
-            </div>`).join("")}
-        </div>
-        <p><button id="add-stage">Add stage</button></p>`;
+            </div>
+            <p><button id="add-stage">Add stage</button></p>
+          </div>
+        </div>`;
 
       app.querySelector("[data-name]").oninput = e => draft.name = e.target.value;
       app.querySelector("[data-workdir]").oninput = e => draft.workdir = e.target.value;
