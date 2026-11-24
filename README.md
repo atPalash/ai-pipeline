@@ -1,6 +1,6 @@
 # ai-pipeline
 
-A minimal GitLab-CI-like pipeline runner with a web UI. Stages run in order, jobs within a stage run in parallel, and each job is either a Python snippet or a GitHub Copilot CLI prompt.
+A minimal pipeline runner with a web UI. Stages run sequentially; jobs in a stage run in parallel. Jobs are Python snippets or GitHub Copilot CLI prompts.
 
 ## Installation
 
@@ -16,15 +16,11 @@ Requires Python 3 with the packages above and, for `copilot` jobs, the Copilot C
 python app.py                # serves http://127.0.0.1:8000 (override with PORT)
 ```
 
-Create and edit pipelines in the browser, then press **Run**. Pipelines are stored in `pipelines.json`; each run gets its own folder under `runs/` unless the pipeline sets a working directory.
+Create and edit pipelines in the browser, then press **Run**. Pipelines are stored in `pipelines.json`; runs are stored under `runs/`. Each run gets its own folder unless the pipeline sets a working directory.
 
 ### Job verdicts
 
-Copilot jobs must end their reply with one of:
+Copilot jobs must end their reply with `STATUS: APPROVED` or `STATUS: REJECTED`. Python jobs pass when they exit 0.
 
-- `STATUS: APPROVED` - the stage continues.
-- `STATUS: WAITING_FOR_MANUAL_APPROVAL` - the run waits for you to Approve or Reject in the UI.
-- `STATUS: REJECTED` - the pipeline stops.
-
-Python jobs count as approved when they exit 0 without a STATUS line. Earlier job output is available to later jobs as `FACTORY_OUT_<JOB_NAME>` environment variables (Python) or in the prompt context (Copilot).
+Earlier job output is passed to Python jobs as `FACTORY_OUT_<STAGE>_<JOB>` environment variables and included in later Copilot prompts.
 

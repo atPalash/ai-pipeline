@@ -1,540 +1,240 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>Factory Pipelines</title>
-<style>
-  :root {
-    --success: #108548; --failed: #dd2b0e; --running: #1f75cb; --pending: #ab6100;
-    --muted: #737278; --border: #dcdcde; --bg: #fbfafd;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #333238; background: #fff; }
-  header { padding: 12px 24px; border-bottom: 1px solid var(--border); display: flex; gap: 16px; align-items: center; }
-  header a { color: inherit; text-decoration: none; font-weight: 600; font-size: 16px; }
-  main { padding: 24px; max-width: 1200px; }
-  h2 { margin: 0 0 12px; font-size: 18px; }
-  section { margin-bottom: 32px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-  th { font-size: 12px; color: var(--muted); text-transform: uppercase; }
-  button { font: inherit; padding: 5px 12px; border: 1px solid var(--border); background: #fff; border-radius: 4px; cursor: pointer; }
-  button:hover { background: #f0f0f0; }
-  button.primary { background: var(--running); color: #fff; border-color: var(--running); }
-  button.danger { color: var(--failed); border-color: var(--failed); }
-  input, textarea { font: inherit; padding: 5px 8px; border: 1px solid var(--border); border-radius: 4px; width: 100%; }
-  textarea { font-family: ui-monospace, monospace; font-size: 12px; min-height: 80px; resize: vertical; }
-  a { color: var(--running); }
-  .row { display: flex; gap: 8px; align-items: center; }
-  .muted { color: var(--muted); }
-
-  /* status badge */
-  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; border: 1px solid; }
-  .badge.success { color: var(--success); border-color: var(--success); }
-  .badge.failed { color: var(--failed); border-color: var(--failed); }
-  .badge.running { color: var(--running); border-color: var(--running); }
-  .badge.pending, .badge.created { color: var(--pending); border-color: var(--pending); }
-  .badge.paused, .badge.waiting { color: var(--pending); border-color: var(--pending); }
-  .badge.canceled, .badge.skipped { color: var(--muted); border-color: var(--muted); }
-
-  /* status icon */
-  .icon { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
-          font-size: 11px; font-weight: 700; color: #fff; flex-shrink: 0; }
-  .icon.success { background: var(--success); }
-  .icon.failed { background: var(--failed); }
-  .icon.running { border: 2px solid var(--running); border-right-color: transparent; animation: spin 1s linear infinite; }
-  .icon.pending, .icon.created { border: 2px solid var(--muted); }
-  .icon.skipped { border: 2px solid var(--border); color: var(--muted); }
-  .icon.canceled { background: var(--muted); }
-  .icon.paused, .icon.waiting { background: var(--pending); }
-  .waitbox { border: 1px solid var(--pending); background: #fff8eb; border-radius: 4px; padding: 12px; margin-bottom: 12px; }
-  .waitbox code { display: block; background: #1f1e24; color: #ececef; padding: 8px; border-radius: 4px; margin: 8px 0; word-break: break-all; }
-  .verdict { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-left: 6px; text-transform: none; color: #fff; }
-  .verdict.APPROVED { background: var(--success); }
-  .verdict.WAITING_FOR_MANUAL_APPROVAL { background: var(--pending); }
-  .verdict.REJECTED, .verdict.FAILED { background: var(--failed); }
-  .stage-actions { display: flex; gap: 6px; margin-bottom: 10px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* mini pipeline */
-  .mini { display: flex; align-items: center; }
-  .mini .icon + .icon { margin-left: 0; }
-  .mini .sep { width: 8px; height: 2px; background: var(--border); }
-
-  /* pipeline graph */
-  .graph { display: flex; gap: 48px; padding: 24px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
-  .stage h3 { margin: 0 0 12px; font-size: 14px; text-transform: capitalize; }
-  .jobs { position: relative; display: flex; flex-direction: column; gap: 10px; }
-  .job { position: relative; display: flex; align-items: center; gap: 8px; height: 34px; width: 200px; padding: 0 10px;
-         border: 1px solid var(--border); border-radius: 17px; background: #fff; cursor: pointer; }
-  .job:hover { background: #f0f0f0; }
-  .job.selected { border-color: var(--running); box-shadow: 0 0 0 1px var(--running); }
-  .job .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .job .dur { font-size: 11px; color: var(--muted); }
-  .tag { font-size: 10px; font-weight: 700; color: #6e49cb; border: 1px solid #6e49cb; border-radius: 3px; padding: 0 3px; }
-  .files { margin-top: 8px; font-size: 11px; color: var(--muted); max-width: 200px; word-break: break-all; }
-  select { font: inherit; padding: 4px; border: 1px solid var(--border); border-radius: 4px; }
-  .stage:not(:first-child) .job::before,
-  .stage:not(:last-child) .job::after { content: ""; position: absolute; top: 50%; width: 24px; border-top: 2px solid var(--border); }
-  .stage:not(:first-child) .job::before { left: -25px; }
-  .stage:not(:last-child) .job::after { right: -25px; }
-  .stage:not(:first-child) .jobs::before,
-  .stage:not(:last-child) .jobs::after { content: ""; position: absolute; top: 17px; bottom: 17px; border-left: 2px solid var(--border); }
-  .stage:not(:first-child) .jobs::before { left: -25px; }
-  .stage:not(:last-child) .jobs::after { right: -25px; }
-
-  pre.log { background: #1f1e24; color: #ececef; padding: 12px; border-radius: 4px; min-height: 120px; max-height: 400px; overflow: auto; white-space: pre-wrap; }
-
-  /* editor */
-  .editor-stages { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 8px; }
-  .editor-stage { min-width: 280px; border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: var(--bg); }
-  .editor-job { position: relative; border: 1px solid var(--border); border-radius: 4px; padding: 8px; background: #fff; margin-top: 8px; }
-  .suggest { position: absolute; left: 8px; right: 8px; z-index: 10; background: #fff; border: 1px solid var(--border); border-radius: 4px;
-             box-shadow: 0 4px 12px rgba(0,0,0,.12); max-height: 260px; overflow: auto; }
-  .suggest .opt { padding: 6px 8px; cursor: pointer; font-size: 12px; }
-  .suggest .opt.active { background: #e9f0fb; }
-  .suggest .desc { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .editor-job textarea { margin-top: 6px; }
-  .error { color: var(--failed); margin: 8px 0; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Factory Pipelines</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #222; background: #fff; }
+    body { margin: 0; }
+    header { padding: 12px 20px; border-bottom: 1px solid #ddd; font-weight: 700; }
+    main { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+    h1, h2, h3 { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+    button, input, textarea, select { font: inherit; }
+    button { padding: 6px 10px; cursor: pointer; }
+    input, textarea, select { box-sizing: border-box; padding: 6px; width: 100%; }
+    textarea { min-height: 90px; font-family: monospace; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .space { display: flex; justify-content: space-between; align-items: center; }
+    .muted { color: #777; }
+    .error { color: #b00020; }
+    .stages { display: flex; gap: 12px; overflow-x: auto; }
+    .stage { min-width: 280px; border: 1px solid #ddd; border-radius: 4px; padding: 12px; }
+    .job { border-top: 1px solid #eee; margin-top: 8px; padding-top: 8px; }
+    .log { background: #191919; color: #eee; padding: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+  </style>
 </head>
 <body>
-<header>
-  <a href="#/">Factory</a>
-  <span class="muted">pipelines</span>
-</header>
-<main id="app"></main>
+  <header>Factory Pipelines</header>
+  <main id="app"></main>
+  <script>
+    const app = document.getElementById("app");
+    let timer;
+    let draft;
 
-<script>
-const ICON = { success: "✓", failed: "✕", canceled: "⊘", skipped: "»", paused: "❚❚", waiting: "?", running: "", pending: "", created: "" };
-const TERMINAL = new Set(["success", "failed", "canceled"]);
-const app = document.getElementById("app");
-let pollTimer = null;
-let selectedJob = null; // [stageIdx, jobIdx]
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const icon = st => `<span class="icon ${esc(st)}" title="${esc(st)}">${ICON[st] ?? ""}</span>`;
-const badge = st => `<span class="badge ${esc(st)}">${icon(st)} ${esc(st)}</span>`;
-
-function duration(start, end) {
-  if (!start) return "";
-  const s = Math.max(0, Math.round((end ?? Date.now() / 1000) - start));
-  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
-}
-
-async function api(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      const d = (await res.json()).detail;
-      msg = Array.isArray(d) ? d.map(e => `${e.loc.slice(1).join(".")}: ${e.msg}`).join("; ") : d;
-    } catch {}
-    throw new Error(msg);
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-// ------------------------------------------------------------ router
-function route() {
-  clearTimeout(pollTimer);
-  const [, view, id] = location.hash.split("/");
-  if (view === "run") return showRun(id);
-  if (view === "files") return showFiles(id);
-  if (view === "edit") return showEditor(id);
-  if (view === "new") return showEditor(null);
-  return showHome();
-}
-window.addEventListener("hashchange", route);
-
-// ------------------------------------------------------------ home
-async function showHome() {
-  const [pipelines, runs] = await Promise.all([api("GET", "/api/pipelines"), api("GET", "/api/runs")]);
-  if (location.hash.split("/")[1]) return; // navigated away meanwhile
-  app.innerHTML = `
-    <section>
-      <div class="row" style="justify-content:space-between"><h2>Pipelines</h2><button class="primary" onclick="location.hash='#/new'">New pipeline</button></div>
-      <table>
-        <tr><th>Name</th><th>Stages</th><th>Jobs</th><th></th></tr>
-        ${pipelines.map(p => `
-          <tr>
-            <td><b>${esc(p.name)}</b> <span class="muted">#${esc(p.id)}</span></td>
-            <td>${p.stages.map(s => esc(s.name)).join(" → ")}</td>
-            <td>${p.stages.reduce((n, s) => n + s.jobs.length, 0)}</td>
-            <td class="row" style="justify-content:flex-end">
-              <button class="primary" data-run="${esc(p.id)}">Run</button>
-              <button data-edit="${esc(p.id)}">Edit</button>
-              <button class="danger" data-del="${esc(p.id)}">Delete</button>
-            </td>
-          </tr>`).join("") || `<tr><td colspan="4" class="muted">No pipelines yet.</td></tr>`}
-      </table>
-    </section>
-    <section>
-      <h2>Runs</h2>
-      <table>
-        <tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th><th>Duration</th><th>Files</th></tr>
-        ${runs.map(r => `
-          <tr>
-            <td>${badge(r.status)}</td>
-            <td><a href="#/run/${esc(r.id)}">#${esc(r.id)}</a></td>
-            <td>${esc(r.pipeline_name)}</td>
-            <td><div class="mini">${r.stages.map(s => icon(s.status)).join('<span class="sep"></span>')}</div></td>
-            <td>${duration(r.started_at, r.finished_at)}</td>
-            <td><a href="#/files/${esc(r.id)}">files</a></td>
-          </tr>`).join("") || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`}
-      </table>
-    </section>`;
-
-  app.querySelectorAll("[data-run]").forEach(b => b.onclick = async () => {
-    const run = await api("POST", `/api/pipelines/${b.dataset.run}/run`);
-    location.hash = `#/run/${run.id}`;
-  });
-  app.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => location.hash = `#/edit/${b.dataset.edit}`);
-  app.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("Delete this pipeline?")) return;
-    await api("DELETE", `/api/pipelines/${b.dataset.del}`);
-    showHome();
-  });
-
-  clearTimeout(pollTimer);
-  if (runs.some(r => !TERMINAL.has(r.status))) pollTimer = setTimeout(showHome, 1000);
-}
-
-// ------------------------------------------------------------ run view
-async function showRun(id) {
-  selectedJob = null;
-  app.innerHTML = `<div id="run"></div>`;
-  await renderRun(id);
-}
-
-async function renderRun(id) {
-  let run;
-  try { run = await api("GET", `/api/runs/${id}`); }
-  catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
-  if (location.hash !== `#/run/${id}` || !document.getElementById("run")) return;
-
-  if (!selectedJob) {
-    // auto-select a job waiting for the user, else the first running job, else the first job
-    for (const st of ["waiting", "running"])
-      run.stages.forEach((s, si) => s.jobs.forEach((j, ji) => { if (!selectedJob && j.status === st) selectedJob = [si, ji]; }));
-    selectedJob ??= [0, 0];
-  }
-  const [si, ji] = selectedJob;
-  const sel = run.stages[si].jobs[ji];
-  const done = TERMINAL.has(run.status);
-
-  // The page is rebuilt every second; remember scroll positions and open sections so they survive.
-  const logEl = document.querySelector("#run [data-scroll^='log-']");
-  const stick = !logEl || logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 5;
-  const scrolls = Object.fromEntries([...document.querySelectorAll("#run [data-scroll]")]
-    .map(el => [el.dataset.scroll, [el.scrollTop, el.scrollLeft]]));
-  const openKeys = new Set([...document.querySelectorAll("#run details[open]")].map(d => d.dataset.key));
-  const pageY = window.scrollY;
-
-  document.getElementById("run").innerHTML = `
-    <div class="row" style="justify-content:space-between;margin-bottom:16px">
-      <div class="row">
-        ${badge(run.status)}
-        <h2 style="margin:0">Run #${esc(run.id)}</h2>
-        <span class="muted">${esc(run.pipeline_name)} · ${duration(run.started_at, run.finished_at)}</span>
-      </div>
-      <div class="row">
-        <a href="#/">← back</a>
-        ${done ? `<button class="primary" id="rerun">Run again</button>`
-          : `${run.status === "paused"
-              ? `<button class="primary" id="resume">Resume</button>`
-              : `<button id="pause">Pause</button>`}
-             <button class="danger" id="cancel">Cancel</button>`}
-      </div>
-    </div>
-    <div class="graph" data-scroll="graph">
-      ${run.stages.map((s, a) => `
-        <div class="stage">
-          <h3>${esc(s.name)}${s.verdict ? `<span class="verdict ${esc(s.verdict)}">${esc(s.verdict)}</span>` : ""}</h3>
-          ${s.status === "waiting" ? `<div class="stage-actions">
-            <button class="primary" data-decide="approve" data-stage="${a}">Approve</button>
-            <button class="danger" data-decide="reject" data-stage="${a}">Reject</button></div>` : ""}
-          <div class="jobs">
-            ${s.jobs.map((j, b) => `
-              <div class="job ${a === si && b === ji ? "selected" : ""}" data-sel="${a},${b}" title="${esc(j.status)}">
-                ${icon(j.status)}<span class="name">${esc(j.name)}</span>${j.type === "copilot" ? `<span class="tag">AI</span>` : ""}<span class="dur">${duration(j.started_at, j.finished_at)}</span>
-              </div>`).join("")}
-          </div>
-          ${s.files?.length ? `<div class="files" title="files written by this stage">wrote: ${s.files.map(esc).join(", ")}</div>` : ""}
-          ${done && s.status !== "created" ? `<div class="stage-actions" style="margin:8px 0 0"><button data-retry="${a}" title="Rerun this stage and the ones after it with the current (edited) pipeline; earlier stages and files are kept">Rerun from here</button></div>` : ""}
-        </div>`).join("")}
-    </div>
-    <p class="muted" style="font-size:12px">workdir: ${esc(run.workdir)} · <a href="#/files/${esc(run.id)}">browse files</a></p>
-    <section style="margin-top:24px">
-      <h2>${esc(run.stages[si].name)} / ${esc(sel.name)} ${badge(sel.status)}${sel.agent ? `<span class="tag" style="font-size:12px;margin-left:6px">agent: ${esc(sel.agent)}</span>` : ""}${sel.skill ? `<span class="tag" style="font-size:12px;margin-left:6px">skill: ${esc(sel.skill)}</span>` : ""}${sel.verdict ? `<span class="verdict ${esc(sel.verdict)}">${esc(sel.verdict)}</span>` : ""}
-        ${sel.exit_code !== null ? `<span class="muted" style="font-size:12px">exit code ${esc(sel.exit_code)}</span>` : ""}</h2>
-      ${run.stages[si].status === "waiting" ? `
-        <div class="waitbox">
-          <b>Stage waiting for manual approval.</b>
-          ${sel.resume_cmd ? `Continue this job's conversation in the Copilot terminal:
-            <code>${esc(sel.resume_cmd)}</code>
-            When you are satisfied, Copilot writes <b>${esc(sel.outcome_file)}</b>.` : "Review the output below."}
-          Approve to continue the pipeline, or Reject to stop it.
-          <div class="row" style="margin-top:8px">
-            ${sel.resume_cmd ? `<button data-copy="${esc(sel.resume_cmd)}">Copy command</button>` : ""}
-            <button class="primary" data-decide="approve" data-stage="${si}">Approve</button>
-            <button class="danger" data-decide="reject" data-stage="${si}">Reject</button>
-          </div>
-        </div>` : sel.resume_cmd ? `
-        <p class="muted" style="font-size:12px">session: <code>${esc(sel.resume_cmd)}</code> <button data-copy="${esc(sel.resume_cmd)}">Copy</button></p>` : ""}
-      <pre class="log" data-scroll="log-${si}-${ji}">${esc(sel.log) || `<span class="muted">${sel.status === "running" ? "waiting for output…" : "no output"}</span>`}</pre>
-      <details data-key="prompt"><summary class="muted">${sel.type === "copilot" ? "prompt sent (incl. earlier stage results)" : "script"}</summary><pre class="log" data-scroll="prompt-${si}-${ji}">${esc(sel.type === "copilot" ? (sel.prompt_sent ?? sel.prompt) : sel.script)}</pre></details>
-    </section>`;
-
-  document.querySelectorAll("#run details[data-key]").forEach(d => d.open = openKeys.has(d.dataset.key));
-  document.querySelectorAll("#run [data-scroll]").forEach(el => {
-    if (scrolls[el.dataset.scroll]) [el.scrollTop, el.scrollLeft] = scrolls[el.dataset.scroll];
-  });
-  const newLog = document.querySelector("#run [data-scroll^='log-']");
-  if (stick || !(newLog.dataset.scroll in scrolls)) newLog.scrollTop = newLog.scrollHeight;
-  window.scrollTo(window.scrollX, pageY);
-
-  document.querySelectorAll("[data-sel]").forEach(el => el.onclick = () => {
-    selectedJob = el.dataset.sel.split(",").map(Number);
-    renderRun(id);
-  });
-  document.querySelectorAll("[data-copy]").forEach(el => el.onclick = () =>
-    navigator.clipboard.writeText(el.dataset.copy).then(() => el.textContent = "Copied", () => prompt("Copy:", el.dataset.copy)));
-  document.querySelectorAll("[data-decide]").forEach(el => el.onclick = async () => {
-    await api("POST", `/api/runs/${id}/stages/${el.dataset.stage}/decision`, { action: el.dataset.decide }).catch(e => alert(e.message));
-    renderRun(id);
-  });
-  document.querySelectorAll("[data-retry]").forEach(el => el.onclick = async () => {
-    await api("POST", `/api/runs/${id}/stages/${el.dataset.retry}/retry`).catch(e => alert(e.message));
-    selectedJob = null;
-    renderRun(id);
-  });
-  document.getElementById("pause")?.addEventListener("click", async () => {
-    await api("POST", `/api/runs/${id}/pause`).catch(e => alert(e.message));
-    renderRun(id);
-  });
-  document.getElementById("resume")?.addEventListener("click", async () => {
-    await api("POST", `/api/runs/${id}/resume`).catch(e => alert(e.message));
-    renderRun(id);
-  });
-  document.getElementById("cancel")?.addEventListener("click", async () => {
-    await api("POST", `/api/runs/${id}/cancel`).catch(e => alert(e.message));
-    renderRun(id);
-  });
-  document.getElementById("rerun")?.addEventListener("click", async () => {
-    try {
-      const r = await api("POST", `/api/pipelines/${run.pipeline_id}/run`);
-      location.hash = `#/run/${r.id}`;
-    } catch (e) { alert(e.message); }
-  });
-
-  clearTimeout(pollTimer);
-  if (!done) pollTimer = setTimeout(() => renderRun(id), 1000);
-}
-
-// ------------------------------------------------------------ run files
-const fileUrl = (id, path) => `/api/runs/${encodeURIComponent(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
-const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
-
-async function showFiles(id, selected) {
-  let data;
-  try { data = await api("GET", `/api/runs/${encodeURIComponent(id)}/files`); }
-  catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
-  if (location.hash !== `#/files/${id}`) return;
-  selected ??= data.files[0]?.path;
-  const sel = data.files.find(f => f.path === selected);
-
-  app.innerHTML = `
-    <div class="row" style="justify-content:space-between;margin-bottom:12px">
-      <h2 style="margin:0">Files of run <a href="#/run/${esc(id)}">#${esc(id)}</a></h2>
-      <a href="#/">← back</a>
-    </div>
-    <p class="muted" style="font-size:12px">${esc(data.workdir)}</p>
-    ${data.files.length ? `
-      <div style="display:flex;gap:16px;align-items:flex-start">
-        <table style="width:auto;min-width:280px">
-          ${data.files.map(f => `
-            <tr><td><a href="#" data-file="${esc(f.path)}" style="${f.path === selected ? "font-weight:700" : ""}">${esc(f.path)}</a></td>
-                <td class="muted" style="white-space:nowrap">${fmtSize(f.size)}</td></tr>`).join("")}
-        </table>
-        <div style="flex:1;min-width:0">
-          <div class="row" style="justify-content:space-between"><b>${esc(sel.path)}</b>
-            <a href="${fileUrl(id, sel.path)}" target="_blank" rel="noopener">open raw</a></div>
-          <pre class="log" id="filebody" style="max-height:none">loading…</pre>
-        </div>
-      </div>` : `<p class="muted">No files yet.</p>`}`;
-
-  app.querySelectorAll("[data-file]").forEach(a => a.onclick = e => { e.preventDefault(); showFiles(id, a.dataset.file); });
-  if (!sel) return;
-  const body = document.getElementById("filebody");
-  if (sel.size > 1048576) { body.textContent = "File is larger than 1 MB; use “open raw”."; return; }
-  const text = await fetch(fileUrl(id, sel.path)).then(r => r.ok ? r.text() : `error: ${r.status}`);
-  body.textContent = text.includes("\0") ? "Binary file; use “open raw”." : text || "(empty file)";
-}
-
-// ------------------------------------------------------------ editor
-const DEFAULT_SCRIPT = "import time\nprint('working...')\ntime.sleep(5)\nprint('done')";
-let draft = null;
-let agents = [];
-
-async function loadAgents() {
-  try { agents = await api("GET", `/api/agents?workdir=${encodeURIComponent(draft.workdir ?? "")}`); }
-  catch { agents = []; }
-}
-
-// Typing "/" at the start of a Copilot prompt suggests agents and skills.
-function attachAgentSuggest(ta) {
-  const box = document.createElement("div");
-  box.className = "suggest";
-  box.hidden = true;
-  ta.after(box);
-  let items = [], active = 0;
-  const close = () => { box.hidden = true; items = []; };
-  const pick = a => {
-    const rest = ta.value.slice(ta.selectionStart).replace(/^[\w.-]*\s*/, "");
-    ta.value = `/${a.id} ${rest}`;
-    ta.selectionStart = ta.selectionEnd = a.id.length + 2;
-    close();
-    ta.dispatchEvent(new Event("input"));
-    ta.focus();
-  };
-  const render = () => {
-    box.innerHTML = items.map((a, i) => `
-      <div class="opt ${i === active ? "active" : ""}" data-i="${i}">
-        <b>/${esc(a.id)}</b> <span class="tag">${esc(a.kind)}</span> <span class="muted">${a.name !== a.id ? esc(a.name) + " · " : ""}${esc(a.source)}</span>
-        <div class="desc">${esc(a.description)}</div>
-      </div>`).join("") || `<div class="opt muted">No agents or skills found. Add repo roots to FACTORY_AGENT_DIRS or set the working directory.</div>`;
-    box.hidden = false;
-    box.querySelectorAll("[data-i]").forEach(el => el.onmousedown = e => { e.preventDefault(); pick(items[+el.dataset.i]); });
-    box.querySelector(".active")?.scrollIntoView({ block: "nearest" });
-  };
-  const update = () => {
-    const m = ta.value.slice(0, ta.selectionStart).match(/^\/([\w.-]*)$/);
-    if (!m) return close();
-    const q = m[1].toLowerCase();
-    items = agents.filter(a => a.id.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
-    active = 0;
-    render();
-  };
-  ta.addEventListener("input", update);
-  ta.addEventListener("click", update);
-  ta.addEventListener("blur", close);
-  ta.addEventListener("keydown", e => {
-    if (box.hidden || !items.length) { if (e.key === "Escape") close(); return; }
-    if (e.key === "ArrowDown") active = (active + 1) % items.length;
-    else if (e.key === "ArrowUp") active = (active - 1 + items.length) % items.length;
-    else if (e.key === "Enter" || e.key === "Tab") return e.preventDefault(), pick(items[active]);
-    else if (e.key === "Escape") return close();
-    else return;
-    e.preventDefault();
-    render();
-  });
-}
-
-async function showEditor(id) {
-  if (id) {
-    try { draft = await api("GET", `/api/pipelines/${id}`); }
-    catch (e) { app.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
-  } else {
-    draft = { name: "new-pipeline", stages: [{ name: "build", jobs: [{ name: "job1", script: DEFAULT_SCRIPT }] }] };
-  }
-  await loadAgents();
-  renderEditor();
-}
-
-function renderEditor(error) {
-  app.innerHTML = `
-    <div class="row" style="justify-content:space-between;margin-bottom:16px">
-      <h2 style="margin:0">${draft.id ? `Edit pipeline #${esc(draft.id)}` : "New pipeline"}</h2>
-      <div class="row">
-        <a href="#/">cancel</a>
-        <button class="primary" id="save">Save</button>
-        ${draft.id ? `<button id="saverun">Save &amp; run</button>` : ""}
-      </div>
-    </div>
-    ${error ? `<p class="error">${esc(error)}</p>` : ""}
-    <label>Name <input data-f="name" value="${esc(draft.name)}"></label>
-    <label style="display:block;margin-top:8px">Working directory <span class="muted">(optional; empty = new folder per run, shared by all jobs)</span>
-      <input data-f="workdir" value="${esc(draft.workdir ?? "")}" placeholder="/path/to/repo"></label>
-    <h3>Stages <span class="muted" style="font-weight:normal;font-size:12px">(run left → right; jobs in a stage run in parallel; a stage continues only when every job ends with <code>STATUS: APPROVED</code>; <code>WAITING_FOR_MANUAL_APPROVAL</code> waits for you; <code>REJECTED</code> or a non-zero exit stops the pipeline. Python jobs that exit 0 without a STATUS line count as APPROVED.)</span></h3>
-    <div class="editor-stages">
-      ${draft.stages.map((s, si) => `
-        <div class="editor-stage">
-          <div class="row">
-            <input data-f="stage" data-si="${si}" value="${esc(s.name)}" placeholder="stage name">
-            <button title="move left" data-act="left" data-si="${si}">←</button>
-            <button title="move right" data-act="right" data-si="${si}">→</button>
-            <button class="danger" title="delete stage" data-act="delstage" data-si="${si}">✕</button>
-          </div>
-          ${s.jobs.map((j, ji) => `
-            <div class="editor-job">
-              <div class="row">
-                <input data-f="job" data-si="${si}" data-ji="${ji}" value="${esc(j.name)}" placeholder="job name">
-                <select data-f="type" data-si="${si}" data-ji="${ji}">
-                  <option value="python" ${j.type !== "copilot" ? "selected" : ""}>python</option>
-                  <option value="copilot" ${j.type === "copilot" ? "selected" : ""}>copilot</option>
-                </select>
-                <button class="danger" title="delete job" data-act="deljob" data-si="${si}" data-ji="${ji}">✕</button>
-              </div>
-              ${j.type === "copilot"
-                ? `<textarea data-f="prompt" data-si="${si}" data-ji="${ji}" placeholder="Prompt for Copilot CLI. Start with / to pick an agent or skill. Earlier stage results and STATUS instructions are appended automatically.">${esc(j.prompt)}</textarea>`
-                : `<textarea data-f="script" data-si="${si}" data-ji="${ji}" spellcheck="false">${esc(j.script)}</textarea>`}
-            </div>`).join("")}
-          <button style="margin-top:8px" data-act="addjob" data-si="${si}">+ job</button>
-        </div>`).join("")}
-      <div><button data-act="addstage">+ stage</button></div>
-    </div>`;
-
-  app.querySelectorAll("[data-f]").forEach(el => el.oninput = () => {
-    const { f, si, ji } = el.dataset;
-    if (f === "name") draft.name = el.value;
-    if (f === "workdir") draft.workdir = el.value;
-    if (f === "stage") draft.stages[si].name = el.value;
-    if (f === "job") draft.stages[si].jobs[ji].name = el.value;
-    if (f === "script") draft.stages[si].jobs[ji].script = el.value;
-    if (f === "prompt") draft.stages[si].jobs[ji].prompt = el.value;
-    if (f === "type") { draft.stages[si].jobs[ji].type = el.value; renderEditor(); }
-  });
-  app.querySelectorAll('textarea[data-f="prompt"]').forEach(attachAgentSuggest);
-  app.querySelector('[data-f="workdir"]').onchange = loadAgents;
-
-  app.querySelectorAll("[data-act]").forEach(el => el.onclick = () => {
-    const si = Number(el.dataset.si), ji = Number(el.dataset.ji);
-    const st = draft.stages;
-    switch (el.dataset.act) {
-      case "addstage": st.push({ name: `stage${st.length + 1}`, jobs: [{ name: "job1", script: DEFAULT_SCRIPT }] }); break;
-      case "delstage": st.splice(si, 1); break;
-      case "left": if (si > 0) [st[si - 1], st[si]] = [st[si], st[si - 1]]; break;
-      case "right": if (si < st.length - 1) [st[si + 1], st[si]] = [st[si], st[si + 1]]; break;
-      case "addjob": st[si].jobs.push({ name: `job${st[si].jobs.length + 1}`, script: DEFAULT_SCRIPT }); break;
-      case "deljob": st[si].jobs.splice(ji, 1); break;
+    async function api(method, url, body) {
+      const response = await fetch(url, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try { detail = (await response.json()).detail ?? detail; } catch {}
+        throw new Error(Array.isArray(detail) ? detail.map(x => x.msg).join("; ") : detail);
+      }
+      return response.status === 204 ? null : response.json();
     }
-    renderEditor();
-  });
 
-  const save = async () => {
-    const body = { name: draft.name, workdir: draft.workdir ?? "", stages: draft.stages };
-    const saved = draft.id ? await api("PUT", `/api/pipelines/${draft.id}`, body) : await api("POST", "/api/pipelines", body);
-    draft = saved;
-    return saved;
-  };
-  document.getElementById("save").onclick = async () => {
-    try { await save(); location.hash = "#/"; } catch (e) { renderEditor(e.message); }
-  };
-  document.getElementById("saverun")?.addEventListener("click", async () => {
-    try {
-      const p = await save();
-      const r = await api("POST", `/api/pipelines/${p.id}/run`);
-      location.hash = `#/run/${r.id}`;
-    } catch (e) { renderEditor(e.message); }
-  });
-}
+    function route() {
+      clearTimeout(timer);
+      const [, view, id] = location.hash.split("/");
+      if (view === "run") showRun(id);
+      else if (view === "edit") showEditor(id);
+      else if (view === "new") showEditor(null);
+      else showHome();
+    }
+    window.addEventListener("hashchange", route);
 
-route();
-</script>
+    async function showHome() {
+      const [pipelines, runs] = await Promise.all([api("GET", "/api/pipelines"), api("GET", "/api/runs")]);
+      app.innerHTML = `
+        <section>
+          <div class="space"><h1>Pipelines</h1><button onclick="location.hash='#/new'">New pipeline</button></div>
+          <table>
+            <tr><th>Name</th><th>Stages</th><th>Jobs</th><th></th></tr>
+            ${pipelines.map(p => `
+              <tr>
+                <td><b>${esc(p.name)}</b> <span class="muted">#${esc(p.id)}</span></td>
+                <td>${p.stages.map(s => esc(s.name)).join(" → ")}</td>
+                <td>${p.stages.reduce((n, s) => n + s.jobs.length, 0)}</td>
+                <td>
+                  <button data-run="${esc(p.id)}">Run</button>
+                  <button data-edit="${esc(p.id)}">Edit</button>
+                  <button data-delete="${esc(p.id)}">Delete</button>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="4" class="muted">No pipelines.</td></tr>`}
+          </table>
+        </section>
+        <section>
+          <h2>Runs</h2>
+          <table>
+            <tr><th>Status</th><th>Run</th><th>Pipeline</th><th>Stages</th></tr>
+            ${runs.map(r => `
+              <tr>
+                <td>${esc(r.status)}</td>
+                <td><a href="#/run/${esc(r.id)}">#${esc(r.id)}</a></td>
+                <td>${esc(r.pipeline_name)}</td>
+                <td>${r.stages.map(s => esc(s.status)).join(" → ")}</td>
+              </tr>`).join("") || `<tr><td colspan="4" class="muted">No runs.</td></tr>`}
+          </table>
+        </section>`;
+
+      app.querySelectorAll("[data-run]").forEach(button => button.onclick = async () => {
+        const run = await api("POST", `/api/pipelines/${button.dataset.run}/run`);
+        location.hash = `#/run/${run.id}`;
+      });
+      app.querySelectorAll("[data-edit]").forEach(button => button.onclick = () =>
+        location.hash = `#/edit/${button.dataset.edit}`);
+      app.querySelectorAll("[data-delete]").forEach(button => button.onclick = async () => {
+        if (!confirm("Delete this pipeline?")) return;
+        await api("DELETE", `/api/pipelines/${button.dataset.delete}`);
+        showHome();
+      });
+      if (runs.some(r => !["success", "failed", "canceled"].includes(r.status)))
+        timer = setTimeout(showHome, 1000);
+    }
+
+    async function showRun(id) {
+      let run;
+      try { run = await api("GET", `/api/runs/${id}`); }
+      catch (error) { app.innerHTML = `<p class="error">${esc(error.message)}</p>`; return; }
+      if (location.hash !== `#/run/${id}`) return;
+
+      app.innerHTML = `
+        <div class="space">
+          <h1>Run #${esc(run.id)} <span class="muted">· ${esc(run.status)}</span></h1>
+          <div class="row"><a href="#/">Back</a>
+            ${!["success", "failed", "canceled"].includes(run.status) ? `<button id="cancel">Cancel</button>` : ""}
+          </div>
+        </div>
+        ${run.stages.map(stage => `
+          <section>
+            <h2>${esc(stage.name)} <span class="muted">· ${esc(stage.status)}</span></h2>
+            ${stage.jobs.map(job => `
+              <details open>
+                <summary>${esc(job.name)} · ${esc(job.status)} · ${esc(job.type)}</summary>
+                <pre class="log">${esc(job.log) || "(no output)"}</pre>
+              </details>`).join("")}
+          </section>`).join("")}`;
+
+      document.getElementById("cancel")?.addEventListener("click", async () => {
+        await api("POST", `/api/runs/${id}/cancel`);
+        showRun(id);
+      });
+      if (!["success", "failed", "canceled"].includes(run.status))
+        timer = setTimeout(() => showRun(id), 1000);
+    }
+
+    async function showEditor(id) {
+      if (id) {
+        draft = await api("GET", `/api/pipelines/${id}`);
+      } else {
+        draft = {
+          name: "new-pipeline",
+          workdir: "",
+          stages: [{ name: "build", jobs: [{ name: "job1", type: "python", script: "print('done')" }] }],
+        };
+      }
+      renderEditor();
+    }
+
+    function renderEditor(error) {
+      app.innerHTML = `
+        <div class="space">
+          <h1>${draft.id ? "Edit pipeline" : "New pipeline"}</h1>
+          <div class="row"><a href="#/">Cancel</a><button id="save">Save</button></div>
+        </div>
+        ${error ? `<p class="error">${esc(error)}</p>` : ""}
+        <label>Name<input data-name value="${esc(draft.name)}"></label>
+        <label>Working directory (optional)<input data-workdir value="${esc(draft.workdir || "")}" placeholder="/existing/directory"></label>
+        <h2>Stages</h2>
+        <div class="stages">
+          ${draft.stages.map((stage, si) => `
+            <div class="stage">
+              <input data-stage-name="${si}" value="${esc(stage.name)}" placeholder="Stage name">
+              ${stage.jobs.map((job, ji) => `
+                <div class="job">
+                  <input data-job-name="${si},${ji}" value="${esc(job.name)}" placeholder="Job name">
+                  <select data-job-type="${si},${ji}">
+                    <option value="python" ${job.type !== "copilot" ? "selected" : ""}>python</option>
+                    <option value="copilot" ${job.type === "copilot" ? "selected" : ""}>copilot</option>
+                  </select>
+                  ${job.type === "copilot"
+                    ? `<textarea data-prompt="${si},${ji}" placeholder="Copilot prompt">${esc(job.prompt || "")}</textarea>`
+                    : `<textarea data-script="${si},${ji}" placeholder="Python script">${esc(job.script || "")}</textarea>`}
+                  <button data-remove-job="${si},${ji}">Remove job</button>
+                </div>`).join("")}
+              <button data-add-job="${si}">Add job</button>
+              <button data-remove-stage="${si}">Remove stage</button>
+            </div>`).join("")}
+        </div>
+        <p><button id="add-stage">Add stage</button></p>`;
+
+      app.querySelector("[data-name]").oninput = e => draft.name = e.target.value;
+      app.querySelector("[data-workdir]").oninput = e => draft.workdir = e.target.value;
+      app.querySelectorAll("[data-stage-name]").forEach(el => el.oninput = e =>
+        draft.stages[+el.dataset.stageName].name = e.target.value);
+      app.querySelectorAll("[data-job-name]").forEach(el => el.oninput = e => {
+        const [si, ji] = el.dataset.jobName.split(",").map(Number);
+        draft.stages[si].jobs[ji].name = e.target.value;
+      });
+      app.querySelectorAll("[data-job-type]").forEach(el => el.onchange = e => {
+        const [si, ji] = el.dataset.jobType.split(",").map(Number);
+        draft.stages[si].jobs[ji].type = e.target.value;
+        renderEditor();
+      });
+      app.querySelectorAll("[data-script]").forEach(el => el.oninput = e => {
+        const [si, ji] = el.dataset.script.split(",").map(Number);
+        draft.stages[si].jobs[ji].script = e.target.value;
+      });
+      app.querySelectorAll("[data-prompt]").forEach(el => el.oninput = e => {
+        const [si, ji] = el.dataset.prompt.split(",").map(Number);
+        draft.stages[si].jobs[ji].prompt = e.target.value;
+      });
+      app.querySelectorAll("[data-add-job]").forEach(el => el.onclick = () => {
+        draft.stages[+el.dataset.addJob].jobs.push({ name: "job", type: "python", script: "print('done')" });
+        renderEditor();
+      });
+      app.querySelectorAll("[data-remove-job]").forEach(el => el.onclick = () => {
+        const [si, ji] = el.dataset.removeJob.split(",").map(Number);
+        draft.stages[si].jobs.splice(ji, 1);
+        if (!draft.stages[si].jobs.length) draft.stages.splice(si, 1);
+        renderEditor();
+      });
+      app.querySelectorAll("[data-remove-stage]").forEach(el => el.onclick = () => {
+        draft.stages.splice(+el.dataset.removeStage, 1);
+        renderEditor();
+      });
+      app.querySelector("#add-stage").onclick = () => {
+        draft.stages.push({ name: "stage", jobs: [{ name: "job", type: "python", script: "print('done')" }] });
+        renderEditor();
+      };
+      app.querySelector("#save").onclick = async () => {
+        try {
+          const body = { name: draft.name, workdir: draft.workdir || "", stages: draft.stages };
+          await api(draft.id ? "PUT" : "POST", draft.id ? `/api/pipelines/${draft.id}` : "/api/pipelines", body);
+          location.hash = "#/";
+        } catch (error) { renderEditor(error.message); }
+      };
+    }
+
+    route();
+  </script>
 </body>
 </html>
