@@ -59,6 +59,7 @@
     .status.failed .status-dot, .status.rejected .status-dot, .status.canceled .status-dot { background: var(--red); }
     .status.running .status-dot { background: var(--blue); box-shadow: 0 0 0 3px #d9ebfa; }
     .status.pending .status-dot, .status.created .status-dot, .status.skipped .status-dot { background: var(--amber); }
+    .status.waiting .status-dot { background: var(--amber); box-shadow: 0 0 0 3px #fff0d6; }
     .status-dot.success { background: var(--green); }
     .status-dot.failed, .status-dot.rejected, .status-dot.canceled { background: var(--red); }
     .status-dot.running { background: var(--blue); box-shadow: 0 0 0 3px #d9ebfa; }
@@ -81,6 +82,8 @@
     summary { padding: 10px 12px; cursor: pointer; font-weight: 600; }
     details[open] summary { border-bottom: 1px solid var(--border); }
     .log { background: #1f1e24; color: #ececef; margin: 0; padding: 12px; max-height: 360px; overflow: auto; white-space: pre-wrap; border-radius: 0 0 4px 4px; }
+    .answer-form { padding: 12px; border-top: 1px solid var(--border); }
+    .answer-form textarea { margin: 8px 0; }
     .stages { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; }
     .editor-stage { min-width: 300px; border: 1px solid var(--border); border-radius: 4px; background: #fafafd; padding: 12px; }
     .editor-stage .stage-title { margin-bottom: 10px; }
@@ -112,8 +115,12 @@
     let connectorGraph;
     let selectedRunId;
     let selectedJob;
+    let selectedLogKey;
+    let followLogTail = true;
     let copilotCommands = { skills: [], agents: [] };
     let commandRequest = 0;
+    const terminalStatuses = ["success", "failed", "canceled"];
+    const isPollingRun = run => !terminalStatuses.includes(run.status);
 
     const esc = value => String(value ?? "").replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -273,7 +280,7 @@
           alert(`Could not clear runs: ${error.message}`);
         }
       };
-      if (runs.some(r => !["success", "failed", "canceled"].includes(r.status)))
+      if (runs.some(isPollingRun))
         timer = setTimeout(showHome, 1000);
     }
 
@@ -287,15 +294,29 @@
         selectedJob = null;
       }
       if (selectedJob && !run.stages[selectedJob[0]]?.jobs[selectedJob[1]]) selectedJob = null;
+      const selectedWaiting = selectedJob && run.stages[selectedJob[0]].jobs[selectedJob[1]].status === "waiting";
+      if (!selectedWaiting) {
+        run.stages.some((stage, si) => {
+          const ji = stage.jobs.findIndex(job => job.status === "waiting");
+          if (ji < 0) return false;
+          selectedJob = [si, ji];
+          return true;
+        });
+      }
       const selectedStage = selectedJob ? run.stages[selectedJob[0]] : null;
       const selected = selectedJob ? selectedStage.jobs[selectedJob[1]] : null;
+      const logKey = selected ? `${id}:${selectedJob[0]}:${selectedJob[1]}` : null;
+      const existingLog = app.querySelector(".log");
+      const sameLog = logKey && selectedLogKey === logKey;
+      const shouldFollowLog = !sameLog || followLogTail;
+      const previousLogScrollTop = sameLog && existingLog ? existingLog.scrollTop : 0;
 
       app.innerHTML = `
         <div class="run-breadcrumb"><a href="#/">Pipelines</a> / ${esc(run.pipeline_name)}</div>
         <div class="space" style="margin-bottom:16px">
           <div class="row"><h1 style="margin:0">Pipeline #${esc(run.id)}</h1>${status(run.status)}</div>
           <div class="row"><a href="#/">← Back</a>
-            ${!["success", "failed", "canceled"].includes(run.status) ? `<button class="danger" id="cancel">Cancel pipeline</button>` : ""}
+            ${!terminalStatuses.includes(run.status) ? `<button class="danger" id="cancel">Cancel pipeline</button>` : ""}
           </div>
         </div>
         <div class="pipeline-graph">
@@ -309,7 +330,7 @@
                     <b>${esc(job.name)}</b>
                     <span class="job-type">${esc(job.type)}</span>
                   </button>
-                  ${["success", "failed", "canceled"].includes(run.status) && stage.status !== "created"
+                  ${terminalStatuses.includes(run.status) && stage.status !== "created"
                     ? `<button class="retry-icon" data-retry="${si}" title="Rerun this stage and later stages" aria-label="Rerun ${esc(job.name)} and later stages">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.76-4.24L13 11h7V4l-2.35 2.35z"/></svg>
                       </button>` : ""}
@@ -324,8 +345,31 @@
                 ${status(selected.status)}
               </div>
               <pre class="log">${esc(selected.log) || (selected.status === "running" ? "Waiting for output…" : "(no output)")}</pre>
+              ${selected.status === "waiting" ? `
+                <div class="answer-form">
+                  <strong>Copilot is waiting for your answer.</strong>
+                  <p>Answer in the displayed Copilot CLI session. Its updates appear here; Approve enables after you send a response.</p>
+                  ${selected.copilot_session_id ? `
+                    <p><code>copilot --resume=${esc(selected.copilot_session_id)}</code></p>
+                    <button type="button" id="copy-session-command" data-session-id="${esc(selected.copilot_session_id)}">Copy CLI command</button>
+                  ` : ""}
+                  <button class="primary" id="approve" ${selected.copilot_user_confirmed ? "" : "disabled"}>Approve</button>
+                </div>` : ""}
             </div>
           </section>` : `<p class="empty">Select a job above to view its output.</p>`}`;
+
+      const log = app.querySelector(".log");
+      if (log) {
+        log.scrollTop = shouldFollowLog ? log.scrollHeight : previousLogScrollTop;
+        selectedLogKey = logKey;
+        followLogTail = shouldFollowLog;
+        log.addEventListener("scroll", () => {
+          followLogTail = log.scrollHeight - log.clientHeight - log.scrollTop <= 24;
+        });
+      } else {
+        selectedLogKey = null;
+        followLogTail = true;
+      }
 
       connectorGraph = app.querySelector(".pipeline-graph");
       drawPipelineConnectors();
@@ -338,6 +382,26 @@
         await api("POST", `/api/runs/${id}/cancel`);
         showRun(id);
       });
+      document.getElementById("approve")?.addEventListener("click", async event => {
+        event.target.disabled = true;
+        const [si, ji] = selectedJob;
+        try {
+          await api("POST", `/api/runs/${id}/stages/${si}/jobs/${ji}/approve`);
+          await showRun(id);
+        } catch (error) {
+          event.target.disabled = false;
+          alert(`Could not approve job: ${error.message}`);
+        }
+      });
+      document.getElementById("copy-session-command")?.addEventListener("click", async event => {
+        const command = `copilot --resume=${event.target.dataset.sessionId}`;
+        try {
+          await navigator.clipboard.writeText(command);
+          event.target.textContent = "Copied";
+        } catch (error) {
+          alert(`Could not copy CLI command: ${error.message}`);
+        }
+      });
       app.querySelectorAll("[data-retry]").forEach(button => button.onclick = async () => {
         if (!confirm("Rerun this stage and later stages in the same pipeline?")) return;
         try {
@@ -347,7 +411,7 @@
           alert(`Could not rerun stage: ${error.message}`);
         }
       });
-      if (!["success", "failed", "canceled"].includes(run.status))
+      if (isPollingRun(run))
         timer = setTimeout(() => showRun(id), 1000);
     }
 

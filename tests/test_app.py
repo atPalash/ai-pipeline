@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -44,6 +45,13 @@ def make_job():
 
 
 class CopilotRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quoted_status_example_is_not_a_verdict(self):
+        job = make_job()
+        job["exit_code"] = 0
+        job["log"] = "How do we prove it before emitting `STATUS: APPROVED`?"
+
+        self.assertEqual(app.job_verdict(job), app.FAILED)
+
     async def test_stops_after_three_retries(self):
         job = make_job()
         run = {
@@ -81,6 +89,26 @@ class CopilotRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["verdict"], app.REJECTED)
         self.assertEqual(job["status"], "failed")
 
+    async def test_wait_status_pauses_job_without_retry(self):
+        job = make_job()
+        run = {
+            "id": "test-wait-status",
+            "workdir": tempfile.gettempdir(),
+            "status": "running",
+        }
+        create_process = AsyncMock(
+            return_value=FakeProcess("What timezone?\nSTATUS: WAIT - What timezone?\n", 0)
+        )
+        self.addCleanup(app.RUN_PROCS.pop, run["id"], None)
+
+        with patch("app.asyncio.create_subprocess_exec", create_process):
+            await app.run_job(run, job, "", {})
+
+        self.assertEqual(create_process.await_count, 1)
+        self.assertEqual(job["verdict"], app.WAIT)
+        self.assertEqual(job["status"], app.WAITING)
+        argv = create_process.await_args.args
+        self.assertIn(f"--session-id={job['copilot_session_id']}", argv)
 
 class CopilotPromptTests(unittest.TestCase):
     def test_slash_prefix_invokes_skill(self):
@@ -133,3 +161,157 @@ class CopilotCommandDiscoveryTests(unittest.TestCase):
         self.assertIn("project-skill", commands["skills"])
         self.assertIn("personal-skill", commands["skills"])
         self.assertIn("reviewer", commands["agents"])
+
+
+class WaitingRunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cli_update_enables_approve_and_is_logged(self):
+        session_id = "922faa19-34da-4008-b993-3d4384670d14"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events_path = (
+                Path(temp_dir) / "session-state" / session_id / "events.jsonl"
+            )
+            events_path.parent.mkdir(parents=True)
+
+            def event(event_id, event_type, content):
+                return json.dumps(
+                    {
+                        "id": event_id,
+                        "type": event_type,
+                        "data": {"content": content},
+                    }
+                )
+
+            wait_event = event(
+                "wait", "assistant.message", "Question?\nSTATUS: WAIT - Question?"
+            )
+            events_path.write_text(wait_event + "\n")
+            job = make_job()
+            job.update(
+                status=app.WAITING,
+                verdict=app.WAIT,
+                copilot_session_id=session_id,
+                copilot_status_event_id="wait",
+            )
+            stage = {
+                "name": "review",
+                "status": app.WAITING,
+                "verdict": app.WAIT,
+                "jobs": [job],
+            }
+            run = {
+                "id": "test-external-session-update",
+                "status": app.WAITING,
+                "finished_at": None,
+                "stages": [stage],
+            }
+            user_event = event("answer", "user.message", "Pacific time")
+            assistant_event = event(
+                "reply", "assistant.message", "Thanks, I will use Pacific time."
+            )
+
+            with (
+                patch.dict(app.RUNS, {run["id"]: run}),
+                patch.object(app, "COPILOT_HOME", Path(temp_dir), create=True),
+                patch("app.save_run"),
+                patch("app.start_run_task") as start_run,
+            ):
+                with events_path.open("a") as events:
+                    events.write(user_event + "\n")
+                    events.write(assistant_event + "\n")
+
+                await app.get_run(run["id"])
+                self.assertEqual(run["status"], app.WAITING)
+                self.assertTrue(job["copilot_user_confirmed"])
+                self.assertIn("Pacific time", job["log"])
+                self.assertIn("Thanks, I will use Pacific time.", job["log"])
+                start_run.assert_not_called()
+
+                await app.approve_waiting_job(run["id"], 0, 0)
+
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(job["status"], "success")
+        self.assertEqual(job["verdict"], app.APPROVED)
+        start_run.assert_called_once_with(run, 0)
+
+    async def test_wait_state_survives_reload(self):
+        run = {
+            "id": "test-persist-wait",
+            "status": app.WAITING,
+            "finished_at": None,
+            "stages": [
+                {
+                    "status": app.WAITING,
+                    "jobs": [{"status": app.WAITING}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("app.RUNS_DIR", Path(temp_dir)):
+                app.save_run(run)
+                loaded = app.load_runs()[run["id"]]
+
+        self.assertEqual(loaded["status"], app.WAITING)
+        self.assertEqual(loaded["stages"][0]["status"], app.WAITING)
+        self.assertEqual(loaded["stages"][0]["jobs"][0]["status"], app.WAITING)
+
+    async def test_wait_pauses_later_stages_without_rerunning_completed_jobs(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            completed = make_job()
+            completed.update(status="success", verdict=app.APPROVED, log="finished")
+            waiting = make_job()
+            run = {
+                "id": "test-wait-run",
+                "workdir": workdir,
+                "status": "pending",
+                "stages": [
+                    {
+                        "name": "review",
+                        "status": "created",
+                        "verdict": None,
+                        "jobs": [completed, waiting],
+                    },
+                    {
+                        "name": "deploy",
+                        "status": "created",
+                        "verdict": None,
+                        "jobs": [make_job()],
+                    },
+                ],
+            }
+            create_process = AsyncMock(
+                return_value=FakeProcess("Question?\nSTATUS: WAIT - Question?\n", 0)
+            )
+            self.addCleanup(app.RUN_PROCS.pop, run["id"], None)
+
+            with (
+                patch("app.asyncio.create_subprocess_exec", create_process),
+                patch("app.save_run"),
+            ):
+                await app.execute_run(run)
+
+        self.assertEqual(create_process.await_count, 1)
+        self.assertEqual(run["status"], app.WAITING)
+        self.assertEqual(run["stages"][0]["status"], app.WAITING)
+        self.assertEqual(run["stages"][1]["status"], "created")
+        self.assertEqual(completed["status"], "success")
+
+    async def test_approve_requires_external_user_message(self):
+        job = make_job()
+        job.update(
+            status=app.WAITING,
+            verdict=app.WAIT,
+        )
+        stage = {"name": "review", "status": app.WAITING, "verdict": app.WAIT, "jobs": [job]}
+        run = {
+            "id": "test-answer",
+            "status": app.WAITING,
+            "finished_at": None,
+            "stages": [stage],
+        }
+
+        with patch.dict(app.RUNS, {run["id"]: run}):
+            with self.assertRaises(app.HTTPException) as error:
+                await app.approve_waiting_job(run["id"], 0, 0)
+
+        self.assertEqual(error.exception.status_code, 409)

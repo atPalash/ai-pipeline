@@ -19,18 +19,25 @@ DATA_FILE = BASE_DIR / "pipelines.json"
 RUNS_DIR = BASE_DIR / "runs"
 COPILOT_CMD = os.environ.get("COPILOT_CMD", "copilot")
 COPILOT_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+COPILOT_HOME = Path(os.environ.get("COPILOT_HOME", Path.home() / ".copilot"))
 MAX_COPILOT_RETRIES = 3
 TERMINAL = {"success", "failed", "canceled"}
+WAITING = "waiting"
 
 APPROVED = "APPROVED"
 REJECTED = "REJECTED"
+WAIT = "WAIT"
 FAILED = "FAILED"
-STATUS_RE = re.compile(rf"STATUS:\W*({APPROVED}|{REJECTED})\b")
+STATUS_RE = re.compile(
+    rf"^[ \t]*STATUS:[ \t]*({APPROVED}|{REJECTED}|{WAIT})\b[^\r\n]*$",
+    re.MULTILINE,
+)
 STATUS_INSTRUCTIONS = f"""
 
 End your reply with exactly one of these lines:
 STATUS: {APPROVED} - the task is done
 STATUS: {REJECTED} - the task cannot be done or is unacceptable
+STATUS: {WAIT} - ask the user a specific question and wait for their answer
 Do not invent results or work around denied access.
 """
 TOOL_RETRY_INSTRUCTIONS = """
@@ -140,14 +147,14 @@ def load_runs() -> dict[str, dict]:
             run = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        if run["status"] not in TERMINAL:
+        if run["status"] not in TERMINAL and run["status"] != WAITING:
             run["status"] = "canceled"
             run["finished_at"] = run.get("finished_at") or time.time()
             for stage in run["stages"]:
-                if stage["status"] not in ("success", "failed", "skipped"):
+                if stage["status"] not in ("success", "failed", "skipped", WAITING):
                     stage["status"] = "canceled"
                 for job in stage["jobs"]:
-                    if job["status"] not in ("success", "failed", "skipped"):
+                    if job["status"] not in ("success", "failed", "skipped", WAITING):
                         job["status"] = "canceled"
         runs[run["id"]] = run
     return runs
@@ -222,6 +229,94 @@ def job_verdict(job: dict) -> str:
     return APPROVED
 
 
+def final_status(text: str) -> str | None:
+    lines = text.rstrip().splitlines()
+    if not lines:
+        return None
+    match = STATUS_RE.fullmatch(lines[-1].strip())
+    return match.group(1) if match else None
+
+
+def copilot_events_path(session_id: str) -> Path | None:
+    try:
+        session_id = str(uuid.UUID(session_id))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return COPILOT_HOME / "session-state" / session_id / "events.jsonl"
+
+
+def read_copilot_session_events(session_id: str) -> list[dict]:
+    path = copilot_events_path(session_id)
+    if path is None:
+        return []
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return []
+
+    complete_end = data.rfind(b"\n") + 1
+    session_events = []
+    for line in data[:complete_end].splitlines():
+        event = json.loads(line)
+        payload = event.get("data")
+        event_type = event.get("type")
+        if event_type not in ("user.message", "assistant.message") or not isinstance(
+            payload, dict
+        ):
+            continue
+        content = payload.get("content")
+        if isinstance(content, str) and content:
+            session_events.append(
+                {
+                    "id": event.get("id"),
+                    "type": event_type,
+                    "content": content,
+                    "status": final_status(content) if event_type == "assistant.message" else None,
+                }
+            )
+    return session_events
+
+
+def sync_waiting_job(run: dict, job: dict) -> None:
+    session_id = job.get("copilot_session_id")
+    if not session_id:
+        return
+
+    events = read_copilot_session_events(session_id)
+    cursor = job.get("copilot_event_id") or job.get("copilot_status_event_id")
+    cursor_index = next(
+        (i for i, event in enumerate(events) if event["id"] == cursor), None
+    )
+    if cursor_index is None:
+        wait_indexes = [
+            i
+            for i, event in enumerate(events)
+            if event["type"] == "assistant.message" and event["status"] == WAIT
+        ]
+        if not wait_indexes:
+            return
+        cursor_index = wait_indexes[-1]
+    updates = events[cursor_index + 1 :]
+    if not updates:
+        if cursor is None:
+            job["copilot_event_id"] = events[cursor_index]["id"]
+            save_run(run)
+        return
+
+    for update in updates:
+        job["copilot_event_id"] = update["id"]
+        if update["type"] == "user.message":
+            job["copilot_user_confirmed"] = True
+            label = "User (Copilot CLI)"
+        else:
+            if update["status"] == WAIT:
+                job["copilot_user_confirmed"] = False
+            label = "Copilot"
+        job["log"] += f"\n\n{label}:\n{update['content']}\n"
+
+    save_run(run)
+
+
 def parse_copilot_prompt(prompt: str) -> tuple[list[str], str]:
     parts = prompt.strip().split(maxsplit=2)
     if not parts or not parts[0].startswith("/"):
@@ -256,18 +351,11 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
 
     if job["type"] == "copilot":
         command_args, prompt = parse_copilot_prompt(job["prompt"])
-        prompt += TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
+        session_id = str(uuid.uuid4())
+        session_option = "--session-id"
         if context:
             prompt += "\n\nResults from earlier stages:\n\n" + context
-        argv = [
-            COPILOT_CMD,
-            *command_args,
-            "--model",
-            COPILOT_MODEL,
-            "-p",
-            prompt,
-            "--allow-all-tools",
-        ]
+        prompt += TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
     else:
         argv = [sys.executable, "-u", "-c", job["script"]]
 
@@ -283,6 +371,20 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
             job["status"] = "canceled"
             job["finished_at"] = time.time()
             return
+        if job["type"] == "copilot":
+            if attempt:
+                session_id = str(uuid.uuid4())
+            job["copilot_session_id"] = session_id
+            argv = [
+                COPILOT_CMD,
+                *command_args,
+                f"{session_option}={session_id}",
+                "--model",
+                COPILOT_MODEL,
+                "-p",
+                prompt,
+                "--allow-all-tools",
+            ]
         if attempt:
             job["log"] += f"\n--- Copilot retry {attempt}/{MAX_COPILOT_RETRIES} ---\n"
         attempt_log = ""
@@ -322,7 +424,18 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
         if job["type"] != "copilot" or job["verdict"] != FAILED:
             break
     job["finished_at"] = time.time()
-    job["status"] = "success" if job["verdict"] == APPROVED else "failed"
+    if job["verdict"] == WAIT:
+        job["status"] = WAITING
+        events = read_copilot_session_events(job.get("copilot_session_id", ""))
+        wait_events = [
+            event
+            for event in events
+            if event["type"] == "assistant.message" and event["status"] == WAIT
+        ]
+        if wait_events:
+            job["copilot_event_id"] = wait_events[-1]["id"]
+    else:
+        job["status"] = "success" if job["verdict"] == APPROVED else "failed"
 
 
 async def execute_run(run: dict, start: int = 0) -> None:
@@ -347,7 +460,11 @@ async def execute_run(run: dict, start: int = 0) -> None:
         context = build_context(run, i)
         outputs = output_env(run, i)
         await asyncio.gather(
-            *(run_job(run, job, context, outputs) for job in stage["jobs"])
+            *(
+                run_job(run, job, context, outputs)
+                for job in stage["jobs"]
+                if job["status"] == "created"
+            )
         )
 
         if run["status"] == "canceled":
@@ -355,6 +472,13 @@ async def execute_run(run: dict, start: int = 0) -> None:
             break
 
         verdicts = {job["verdict"] for job in stage["jobs"]}
+        if WAIT in verdicts:
+            stage["verdict"] = WAIT
+            stage["status"] = WAITING
+            run["status"] = WAITING
+            run["finished_at"] = None
+            save_run(run)
+            return
         if REJECTED in verdicts:
             stage["verdict"] = REJECTED
         elif FAILED in verdicts:
@@ -487,10 +611,16 @@ def clear_runs() -> dict[str, int]:
 
 
 @app.get("/api/runs/{rid}")
-def get_run(rid: str) -> dict:
+async def get_run(rid: str) -> dict:
     if rid not in RUNS:
         raise HTTPException(404, "run not found")
-    return RUNS[rid]
+    run = RUNS[rid]
+    if run["status"] == WAITING:
+        for stage_index, stage in enumerate(run["stages"]):
+            for job in stage["jobs"]:
+                if job["status"] == WAITING:
+                    sync_waiting_job(run, job)
+    return run
 
 
 @app.post("/api/runs/{rid}/cancel")
@@ -505,6 +635,36 @@ def cancel_run(rid: str) -> dict:
         if proc.returncode is None:
             signal_group(proc, signal.SIGKILL)
     save_run(run)
+    return run
+
+
+@app.post("/api/runs/{rid}/stages/{si}/jobs/{ji}/approve")
+async def approve_waiting_job(rid: str, si: int, ji: int) -> dict:
+    run = RUNS.get(rid)
+    if run is None:
+        raise HTTPException(404, "run not found")
+    if run["status"] != WAITING:
+        raise HTTPException(409, f"run is {run['status']}, not waiting for an answer")
+    if not 0 <= si < len(run["stages"]):
+        raise HTTPException(404, "stage not found")
+    stage = run["stages"][si]
+    if not 0 <= ji < len(stage["jobs"]):
+        raise HTTPException(404, "job not found")
+    job = stage["jobs"][ji]
+    if job["status"] != WAITING:
+        raise HTTPException(409, "job is not waiting for an answer")
+    if not job.get("copilot_user_confirmed"):
+        raise HTTPException(409, "answer the questions in Copilot CLI before approving")
+
+    job["status"] = "success"
+    job["verdict"] = APPROVED
+    job["finished_at"] = time.time()
+    stage["status"] = "running"
+    stage["verdict"] = None
+    run["status"] = "running"
+    run["finished_at"] = None
+    save_run(run)
+    start_run_task(run, si)
     return run
 
 
