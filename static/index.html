@@ -87,6 +87,12 @@
     .editor-job { border: 1px solid var(--border); border-radius: 4px; background: #fff; margin: 8px 0; padding: 10px; }
     .editor-job > * { margin-top: 6px; }
     .editor-job .row { margin-top: 0; }
+    .prompt-editor { position: relative; }
+    .command-suggestions { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: #fff; box-shadow: 0 4px 12px #0002; }
+    .command-suggestion { width: 100%; min-height: 38px; border: 0; border-radius: 0; display: flex; justify-content: space-between; align-items: center; text-align: left; }
+    .command-suggestion + .command-suggestion { border-top: 1px solid #f0f0f0; }
+    .command-suggestion.active, .command-suggestion:hover { background: #f0f6fc; }
+    .command-suggestion small { color: var(--muted); }
     .editor-actions { margin-top: 10px; display: flex; gap: 6px; }
     .field { margin: 10px 0; }
     .field label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
@@ -106,6 +112,8 @@
     let connectorGraph;
     let selectedRunId;
     let selectedJob;
+    let copilotCommands = { skills: [], agents: [] };
+    let commandRequest = 0;
 
     const esc = value => String(value ?? "").replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -353,7 +361,93 @@
           stages: [{ name: "build", jobs: [{ name: "job1", type: "python", script: "print('done')" }] }],
         };
       }
+      await loadCopilotCommands(false);
       renderEditor();
+    }
+
+    async function loadCopilotCommands(updateEditor = true) {
+      const request = ++commandRequest;
+      const workdir = draft?.workdir || "";
+      const commands = await api("GET", `/api/copilot-commands?workdir=${encodeURIComponent(workdir)}`);
+      if (request !== commandRequest) return;
+      copilotCommands = commands;
+      if (updateEditor) app.querySelectorAll("[data-prompt]").forEach(updatePromptSuggestions);
+    }
+
+    function promptSuggestionState(textarea) {
+      const cursor = textarea.selectionStart;
+      const prefix = textarea.value.slice(0, cursor);
+      if (prefix.includes("\n")) return null;
+
+      if (prefix === "/") {
+        return {
+          end: cursor,
+          items: [
+            { type: "command", name: "skill", detail: "Choose a skill" },
+            { type: "command", name: "agent", detail: "Choose an agent" },
+            ...copilotCommands.skills.slice(0, 8).map(name => ({ type: "skill", name })),
+          ],
+        };
+      }
+
+      let match = prefix.match(/^\/(skill|agent)$/) || prefix.match(/^\/(skill|agent)\s+$/);
+      let query = "";
+      if (!match) {
+        match = prefix.match(/^\/(skill|agent)\s+(\S+)$/);
+        query = match?.[2] || "";
+      }
+      if (match) {
+        const type = match[1];
+        const names = copilotCommands[type === "skill" ? "skills" : "agents"];
+        return {
+          end: cursor,
+          items: names
+            .filter(name => name.toLowerCase().startsWith(query.toLowerCase()))
+            .map(name => ({ type, name })),
+        };
+      }
+
+      match = prefix.match(/^\/([^\s]+)$/);
+      if (!match) return null;
+      const shorthandQuery = match[1];
+      return {
+        end: cursor,
+        items: copilotCommands.skills
+          .filter(name => name.toLowerCase().startsWith(shorthandQuery.toLowerCase()))
+          .map(name => ({ type: "skill", name })),
+      };
+    }
+
+    function choosePromptSuggestion(textarea, state, item) {
+      const replacement = item.type === "command"
+        ? `/${item.name} `
+        : item.type === "agent"
+          ? `/agent ${item.name} `
+          : `/skill ${item.name} `;
+      textarea.value = replacement + textarea.value.slice(state.end);
+      textarea.setSelectionRange(replacement.length, replacement.length);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.focus();
+    }
+
+    function updatePromptSuggestions(textarea) {
+      const list = textarea.closest(".prompt-editor").querySelector(".command-suggestions");
+      const state = promptSuggestionState(textarea);
+      if (!state?.items.length) {
+        list.hidden = true;
+        list.replaceChildren();
+        return null;
+      }
+
+      list.innerHTML = state.items.map((item, index) => `
+        <button type="button" class="command-suggestion${index === 0 ? " active" : ""}" role="option" aria-selected="${index === 0}" data-command-index="${index}">
+          <span>/${esc(item.name)}</span><small>${esc(item.detail || (item.type === "agent" ? "Agent" : "Skill"))}</small>
+        </button>`).join("");
+      list.hidden = false;
+      list.onmousedown = event => event.preventDefault();
+      list.querySelectorAll("[data-command-index]").forEach(button => button.onclick = () =>
+        choosePromptSuggestion(textarea, state, state.items[+button.dataset.commandIndex]));
+      return state;
     }
 
     function renderEditor(error) {
@@ -383,7 +477,10 @@
                         </select>
                       </div>
                       ${job.type === "copilot"
-                        ? `<textarea data-prompt="${si},${ji}" placeholder="Copilot prompt">${esc(job.prompt || "")}</textarea>`
+                        ? `<div class="prompt-editor">
+                            <textarea data-prompt="${si},${ji}" placeholder="Copilot prompt" aria-autocomplete="list">${esc(job.prompt || "")}</textarea>
+                            <div class="command-suggestions" role="listbox" aria-label="Copilot command suggestions" hidden></div>
+                          </div>`
                         : `<textarea data-script="${si},${ji}" placeholder="Python script">${esc(job.script || "")}</textarea>`}
                       <button class="danger" data-remove-job="${si},${ji}">Remove job</button>
                     </div>`).join("")}
@@ -399,6 +496,7 @@
 
       app.querySelector("[data-name]").oninput = e => draft.name = e.target.value;
       app.querySelector("[data-workdir]").oninput = e => draft.workdir = e.target.value;
+      app.querySelector("[data-workdir]").onchange = () => loadCopilotCommands();
       app.querySelectorAll("[data-stage-name]").forEach(el => el.oninput = e =>
         draft.stages[+el.dataset.stageName].name = e.target.value);
       app.querySelectorAll("[data-job-name]").forEach(el => el.oninput = e => {
@@ -414,9 +512,36 @@
         const [si, ji] = el.dataset.script.split(",").map(Number);
         draft.stages[si].jobs[ji].script = e.target.value;
       });
-      app.querySelectorAll("[data-prompt]").forEach(el => el.oninput = e => {
-        const [si, ji] = el.dataset.prompt.split(",").map(Number);
-        draft.stages[si].jobs[ji].prompt = e.target.value;
+      app.querySelectorAll("[data-prompt]").forEach(el => {
+        let selectedIndex = 0;
+        el.oninput = e => {
+          const [si, ji] = el.dataset.prompt.split(",").map(Number);
+          draft.stages[si].jobs[ji].prompt = e.target.value;
+          selectedIndex = 0;
+          updatePromptSuggestions(el);
+        };
+        el.onkeydown = event => {
+          const state = promptSuggestionState(el);
+          if (!state?.items.length) return;
+          if (event.key === "Escape") {
+            el.closest(".prompt-editor").querySelector(".command-suggestions").hidden = true;
+          } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            selectedIndex = (selectedIndex + (event.key === "ArrowDown" ? 1 : -1) + state.items.length) % state.items.length;
+            const list = el.closest(".prompt-editor").querySelector(".command-suggestions");
+            list.querySelectorAll(".command-suggestion").forEach((option, index) => {
+              option.classList.toggle("active", index === selectedIndex);
+              option.setAttribute("aria-selected", String(index === selectedIndex));
+            });
+          } else if (event.key === "Enter" || event.key === "Tab") {
+            event.preventDefault();
+            choosePromptSuggestion(el, state, state.items[selectedIndex % state.items.length]);
+            selectedIndex = 0;
+          }
+        };
+        el.onblur = () => {
+          el.closest(".prompt-editor").querySelector(".command-suggestions").hidden = true;
+        };
       });
       app.querySelectorAll("[data-add-job]").forEach(el => el.onclick = () => {
         draft.stages[+el.dataset.addJob].jobs.push({ name: "job", type: "python", script: "print('done')" });

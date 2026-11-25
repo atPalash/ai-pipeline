@@ -90,6 +90,43 @@ def save_pipelines() -> None:
     DATA_FILE.write_text(json.dumps([p.model_dump() for p in PIPELINES.values()], indent=2))
 
 
+def command_name(path: Path) -> str:
+    content = path.read_text()
+    frontmatter = re.match(r"\A---\s*\n(.*?)\n---\s*(?:\n|$)", content, re.DOTALL)
+    if frontmatter:
+        name = re.search(r"^name:\s*[\"']?([^\"'\n]+)", frontmatter.group(1), re.MULTILINE)
+        if name:
+            return name.group(1).strip()
+    return path.parent.name if path.name == "SKILL.md" else path.stem
+
+
+def discover_copilot_commands(workdir: str = "") -> dict[str, list[str]]:
+    home = Path.home()
+    skill_roots = [home / ".copilot" / "skills", home / ".agents" / "skills"]
+    agent_roots = [home / ".copilot" / "agents"]
+    if workdir:
+        root = Path(workdir).expanduser()
+        skill_roots.extend(root / path for path in (".github/skills", ".agents/skills", ".claude/skills"))
+        agent_roots.append(root / ".github" / "agents")
+
+    skills = {
+        command_name(path)
+        for root in skill_roots
+        if root.is_dir()
+        for path in root.glob("*/SKILL.md")
+    }
+    agents = {
+        command_name(path)
+        for root in agent_roots
+        if root.is_dir()
+        for path in root.glob("*.md")
+    }
+    return {
+        "skills": sorted(skills, key=str.casefold),
+        "agents": sorted(agents, key=str.casefold),
+    }
+
+
 def save_run(run: dict) -> None:
     path = RUNS_DIR / run["id"] / "run.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,16 +222,46 @@ def job_verdict(job: dict) -> str:
     return APPROVED
 
 
+def parse_copilot_prompt(prompt: str) -> tuple[list[str], str]:
+    parts = prompt.strip().split(maxsplit=2)
+    if not parts or not parts[0].startswith("/"):
+        return [], prompt
+
+    command = parts[0][1:]
+    if command == "agent":
+        if len(parts) < 2:
+            return [], prompt
+        agent = parts[1]
+        task = parts[2] if len(parts) > 2 else ""
+        return ["--agent", agent], task
+
+    if command == "skill":
+        if len(parts) < 2:
+            return [], prompt
+        skill = parts[1]
+        task = parts[2] if len(parts) > 2 else ""
+    else:
+        skill = command
+        task = parts[1] + (f" {parts[2]}" if len(parts) > 2 else "")
+
+    skill_prompt = f"Use the /{skill} skill"
+    if task:
+        skill_prompt += f" to complete this task:\n{task}"
+    return [], skill_prompt
+
+
 async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -> None:
     job["status"] = "running"
     job["started_at"] = time.time()
 
     if job["type"] == "copilot":
-        prompt = job["prompt"] + TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
+        command_args, prompt = parse_copilot_prompt(job["prompt"])
+        prompt += TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
         if context:
             prompt += "\n\nResults from earlier stages:\n\n" + context
         argv = [
             COPILOT_CMD,
+            *command_args,
             "--model",
             COPILOT_MODEL,
             "-p",
@@ -348,6 +415,11 @@ def index():
 @app.get("/api/pipelines")
 def list_pipelines() -> list[Pipeline]:
     return list(PIPELINES.values())
+
+
+@app.get("/api/copilot-commands")
+def list_copilot_commands(workdir: str = "") -> dict[str, list[str]]:
+    return discover_copilot_commands(workdir.strip())
 
 
 @app.get("/api/pipelines/{pid}")
