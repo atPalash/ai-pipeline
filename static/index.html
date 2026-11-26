@@ -347,8 +347,12 @@
               <pre class="log">${esc(selected.log) || (selected.status === "running" ? "Waiting for output…" : "(no output)")}</pre>
               ${selected.status === "waiting" ? `
                 <div class="answer-form">
-                  <strong>Copilot is waiting for your answer.</strong>
-                  <p>Answer in the displayed Copilot CLI session. Its updates appear here; Approve enables after you send a response.</p>
+                  <strong>${selected.waiting_reason === "timeout"
+                    ? `Copilot timed out after ${esc(selected.timeout_minutes || 5)} minutes and was stopped.`
+                    : "Copilot is waiting for your answer."}</strong>
+                  <p>${selected.waiting_reason === "timeout"
+                    ? "Resume the CLI session, send guidance to fix the issue, then approve to continue."
+                    : "Answer in the displayed Copilot CLI session. Its updates appear here; Approve enables after you send a response."}</p>
                   ${selected.copilot_session_id ? `
                     <p><code>copilot --resume=${esc(selected.copilot_session_id)}</code></p>
                     <button type="button" id="copy-session-command" data-session-id="${esc(selected.copilot_session_id)}">Copy CLI command</button>
@@ -546,6 +550,9 @@
                             <div class="command-suggestions" role="listbox" aria-label="Copilot command suggestions" hidden></div>
                           </div>`
                         : `<textarea data-terminal="${si},${ji}" placeholder="Terminal command, e.g. python script.py or g++ main.cpp -o main && ./main">${esc(job.terminal || "")}</textarea>`}
+                      ${job.type === "copilot"
+                        ? `<div class="field"><label>Timeout (minutes)</label><input data-timeout="${si},${ji}" type="number" min="1" step="1" required value="${esc(job.timeout_minutes || 5)}"></div>`
+                        : ""}
                       <button class="danger" data-remove-job="${si},${ji}">Remove job</button>
                     </div>`).join("")}
                   <div class="editor-actions">
@@ -569,8 +576,16 @@
       });
       app.querySelectorAll("[data-job-type]").forEach(el => el.onchange = e => {
         const [si, ji] = el.dataset.jobType.split(",").map(Number);
-        draft.stages[si].jobs[ji].type = e.target.value;
+        const job = draft.stages[si].jobs[ji];
+        job.type = e.target.value;
+        if (job.type === "copilot" && !job.timeout_minutes) job.timeout_minutes = 5;
         renderEditor();
+      });
+      app.querySelectorAll("[data-timeout]").forEach(el => el.oninput = e => {
+        const [si, ji] = el.dataset.timeout.split(",").map(Number);
+        draft.stages[si].jobs[ji].timeout_minutes = e.target.value === ""
+          ? null
+          : Number(e.target.value);
       });
       app.querySelectorAll("[data-terminal]").forEach(el => el.oninput = e => {
         const [si, ji] = el.dataset.terminal.split(",").map(Number);
@@ -626,6 +641,11 @@
         renderEditor();
       };
       app.querySelector("#save").onclick = async () => {
+        const invalidTimeout = app.querySelector("[data-timeout]:invalid");
+        if (invalidTimeout) {
+          invalidTimeout.reportValidity();
+          return;
+        }
         try {
           const body = { name: draft.name, workdir: draft.workdir || "", stages: draft.stages };
           await api(draft.id ? "PUT" : "POST", draft.id ? `/api/pipelines/${draft.id}` : "/api/pipelines", body);

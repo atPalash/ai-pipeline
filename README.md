@@ -26,6 +26,7 @@ Create and edit pipelines in the browser, then press **Run**. Pipelines are stor
 ### Job verdicts
 
 Copilot jobs must end their reply with `STATUS: APPROVED` or `STATUS: REJECTED`. Terminal jobs use the `terminal` field for a Bash command and pass when it exits 0. Commands run in the pipeline working directory and can invoke tools available on the host, e.g. `python script.py` or `g++ main.cpp -o main && ./main`.
+Copilot jobs default to a five-minute timeout, configurable per job in minutes. On timeout, the process is stopped and the run pauses for user input; resume the CLI session, send guidance, then approve to continue.
 
 Earlier job output is passed to terminal commands as `FACTORY_OUT_<STAGE>_<JOB>` environment variables and included in later Copilot prompts.
 

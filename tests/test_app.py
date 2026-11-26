@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import json
 import tempfile
@@ -27,6 +28,17 @@ class FakeProcess:
         self.returncode = returncode
 
     async def wait(self):
+        return self.returncode
+
+
+class HangingProcess:
+    def __init__(self):
+        self.stdout = FakeStdout("")
+        self.returncode = None
+        self.finished = asyncio.Event()
+
+    async def wait(self):
+        await self.finished.wait()
         return self.returncode
 
 
@@ -163,6 +175,11 @@ class CopilotPromptTests(unittest.TestCase):
 
 
 class JobValidationTests(unittest.TestCase):
+    def test_copilot_timeout_defaults_to_five_minutes(self):
+        job = app.Job(name="ai", type="copilot", prompt="do task")
+
+        self.assertEqual(job.timeout_minutes, 5)
+
     def test_terminal_job_requires_command_text(self):
         with self.assertRaises(ValueError):
             app.Job(name="shell", type="terminal")
@@ -202,6 +219,116 @@ class CopilotCommandDiscoveryTests(unittest.TestCase):
 
 
 class WaitingRunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_copilot_timeout_stops_job_and_waits_for_user(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            job = make_job()
+            job["timeout_minutes"] = 0.0001
+            run = {
+                "id": "test-copilot-timeout",
+                "workdir": workdir,
+                "status": "pending",
+                "stages": [
+                    {
+                        "name": "review",
+                        "status": "created",
+                        "verdict": None,
+                        "jobs": [job],
+                    },
+                    {
+                        "name": "deploy",
+                        "status": "created",
+                        "verdict": None,
+                        "jobs": [make_job()],
+                    },
+                ],
+            }
+            proc = HangingProcess()
+            create_process = AsyncMock(return_value=proc)
+
+            def stop_process(_proc, _sig):
+                proc.returncode = -9
+                proc.finished.set()
+
+            self.addCleanup(app.RUN_PROCS.pop, run["id"], None)
+            with (
+                patch("app.asyncio.create_subprocess_exec", create_process),
+                patch("app.signal_group", side_effect=stop_process),
+                patch("app.read_copilot_session_events", return_value=[]),
+                patch("app.save_run"),
+            ):
+                await app.execute_run(run)
+
+        self.assertEqual(create_process.await_count, 1)
+        self.assertEqual(job["verdict"], app.WAIT)
+        self.assertEqual(job["status"], app.WAITING)
+        self.assertEqual(job["waiting_reason"], "timeout")
+        self.assertEqual(run["status"], app.WAITING)
+        self.assertEqual(run["stages"][0]["status"], app.WAITING)
+        self.assertEqual(run["stages"][1]["status"], "created")
+
+    async def test_timeout_wait_accepts_cli_guidance_before_approval(self):
+        session_id = "922faa19-34da-4008-b993-3d4384670d14"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events_path = (
+                Path(temp_dir) / "session-state" / session_id / "events.jsonl"
+            )
+            events_path.parent.mkdir(parents=True)
+
+            def event(event_id, event_type, content):
+                return json.dumps(
+                    {
+                        "id": event_id,
+                        "type": event_type,
+                        "data": {"content": content},
+                    }
+                )
+
+            events_path.write_text(
+                event("baseline", "assistant.message", "Working") + "\n"
+            )
+            job = make_job()
+            job.update(
+                status=app.WAITING,
+                verdict=app.WAIT,
+                waiting_reason="timeout",
+                copilot_session_id=session_id,
+                copilot_event_id="baseline",
+            )
+            stage = {
+                "name": "review",
+                "status": app.WAITING,
+                "verdict": app.WAIT,
+                "jobs": [job],
+            }
+            run = {
+                "id": "test-timeout-guidance",
+                "status": app.WAITING,
+                "finished_at": None,
+                "stages": [stage],
+            }
+            with events_path.open("a") as events:
+                events.write(
+                    event("guidance", "user.message", "Use a safer approach") + "\n"
+                )
+                events.write(
+                    event("reply", "assistant.message", "I will adjust") + "\n"
+                )
+
+            with (
+                patch.dict(app.RUNS, {run["id"]: run}),
+                patch.object(app, "COPILOT_HOME", Path(temp_dir), create=True),
+                patch("app.save_run"),
+                patch("app.start_run_task") as start_run,
+            ):
+                await app.get_run(run["id"])
+                self.assertTrue(job["copilot_user_confirmed"])
+                self.assertIn("Use a safer approach", job["log"])
+                await app.approve_waiting_job(run["id"], 0, 0)
+
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(job["status"], "success")
+        start_run.assert_called_once_with(run, 0)
+
     async def test_cli_update_enables_approve_and_is_logged(self):
         session_id = "922faa19-34da-4008-b993-3d4384670d14"
         with tempfile.TemporaryDirectory() as temp_dir:

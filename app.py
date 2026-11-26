@@ -22,6 +22,7 @@ COPILOT_HOME = Path(os.environ.get("COPILOT_HOME", Path.home() / ".copilot"))
 MAX_COPILOT_RETRIES = 3
 TERMINAL = {"success", "failed", "canceled"}
 WAITING = "waiting"
+COPILOT_DEFAULT_TIMEOUT_MINUTES = 5
 
 APPROVED = "APPROVED"
 REJECTED = "REJECTED"
@@ -51,13 +52,22 @@ class Job(BaseModel):
     type: Literal["terminal", "copilot"] = "terminal"
     terminal: str = ""
     prompt: str = ""
+    timeout_minutes: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_job_input(self):
-        if self.type == "copilot" and not self.prompt.strip():
-            raise ValueError(f"copilot job '{self.name}' needs a prompt")
-        if self.type == "terminal" and not self.terminal.strip():
-            raise ValueError(f"terminal job '{self.name}' needs a command")
+        if self.type == "copilot":
+            if not self.prompt.strip():
+                raise ValueError(f"copilot job '{self.name}' needs a prompt")
+            if self.timeout_minutes is None:
+                self.timeout_minutes = COPILOT_DEFAULT_TIMEOUT_MINUTES
+        if self.type == "terminal":
+            if not self.terminal.strip():
+                raise ValueError(f"terminal job '{self.name}' needs a command")
+            if self.timeout_minutes is not None:
+                raise ValueError(
+                    f"terminal job '{self.name}' cannot have a timeout"
+                )
         return self
 
 
@@ -178,6 +188,7 @@ def new_stage(stage: Stage) -> dict:
                 "type": job.type,
                 "terminal": job.terminal,
                 "prompt": job.prompt,
+                "timeout_minutes": job.timeout_minutes,
                 "status": "created",
                 "verdict": None,
                 "log": "",
@@ -289,14 +300,26 @@ def sync_waiting_job(run: dict, job: dict) -> None:
         (i for i, event in enumerate(events) if event["id"] == cursor), None
     )
     if cursor_index is None:
-        wait_indexes = [
-            i
-            for i, event in enumerate(events)
-            if event["type"] == "assistant.message" and event["status"] == WAIT
-        ]
-        if not wait_indexes:
-            return
-        cursor_index = wait_indexes[-1]
+        if job.get("waiting_reason") == "timeout":
+            if not events:
+                return
+            # The stopped attempt already showed everything up to its last
+            # message, so replay only what came after it.
+            message_indexes = [
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "assistant.message"
+            ]
+            cursor_index = message_indexes[-1] if message_indexes else -1
+        else:
+            wait_indexes = [
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "assistant.message" and event["status"] == WAIT
+            ]
+            if not wait_indexes:
+                return
+            cursor_index = wait_indexes[-1]
     updates = events[cursor_index + 1 :]
     if not updates:
         if cursor is None:
@@ -349,11 +372,15 @@ def parse_copilot_prompt(prompt: str) -> tuple[list[str], str]:
 async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -> None:
     job["status"] = "running"
     job["started_at"] = time.time()
+    timeout_deadline = None
 
     if job["type"] == "copilot":
         command_args, prompt = parse_copilot_prompt(job["prompt"])
         session_id = str(uuid.uuid4())
         session_option = "--session-id"
+        timeout_minutes = (
+            job.get("timeout_minutes") or COPILOT_DEFAULT_TIMEOUT_MINUTES
+        )
         if context:
             prompt += "\n\nResults from earlier stages:\n\n" + context
         prompt += TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
@@ -388,6 +415,11 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
             ]
         if attempt:
             job["log"] += f"\n--- Copilot retry {attempt}/{MAX_COPILOT_RETRIES} ---\n"
+        if job["type"] == "copilot":
+            # Each attempt gets its own full budget.
+            timeout_deadline = (
+                asyncio.get_running_loop().time() + timeout_minutes * 60
+            )
         attempt_log = ""
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -408,17 +440,54 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
 
         procs = RUN_PROCS.setdefault(run["id"], set())
         procs.add(proc)
-        async for line in proc.stdout:
-            decoded = line.decode(errors="replace")
-            attempt_log += decoded
-            job["log"] += decoded
-        rc = await proc.wait()
+
+        async def collect_output() -> str:
+            output = []
+            async for line in proc.stdout:
+                decoded = line.decode(errors="replace")
+                output.append(decoded)
+                job["log"] += decoded
+            return "".join(output)
+
+        output_task = asyncio.create_task(collect_output())
+        wait_task = asyncio.create_task(proc.wait())
+        timed_out = False
+        if timeout_deadline is None:
+            rc = await wait_task
+        else:
+            remaining = max(
+                0, timeout_deadline - asyncio.get_running_loop().time()
+            )
+            done, _ = await asyncio.wait({wait_task}, timeout=remaining)
+            if wait_task in done:
+                rc = wait_task.result()
+            else:
+                timed_out = True
+                signal_group(proc, signal.SIGKILL)
+                rc = await wait_task
+        attempt_log = await output_task
         procs.discard(proc)
         job["exit_code"] = rc
 
         if run["status"] == "canceled":
             job["status"] = "canceled"
             job["finished_at"] = time.time()
+            return
+        if timed_out:
+            job["log"] += (
+                f"\nCopilot timed out after {timeout_minutes} minutes and was stopped. "
+                "Resume the CLI session, send guidance, then approve to continue.\n"
+            )
+            job.update(
+                status=WAITING,
+                verdict=WAIT,
+                finished_at=time.time(),
+                waiting_reason="timeout",
+                copilot_user_confirmed=False,
+            )
+            events = read_copilot_session_events(job.get("copilot_session_id", ""))
+            if events:
+                job["copilot_event_id"] = events[-1]["id"]
             return
         attempt_result = {**job, "exit_code": rc, "log": attempt_log}
         job["verdict"] = job_verdict(attempt_result)
