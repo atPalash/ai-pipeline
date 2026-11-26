@@ -422,7 +422,7 @@
         draft = {
           name: "new-pipeline",
           workdir: "",
-          stages: [{ name: "build", jobs: [{ name: "job1", type: "python", script: "print('done')" }] }],
+          stages: [{ name: "build", jobs: [{ name: "job1", type: "terminal", terminal: "echo done" }] }],
         };
       }
       await loadCopilotCommands(false);
@@ -536,7 +536,7 @@
                       <div class="row">
                         <input data-job-name="${si},${ji}" value="${esc(job.name)}" placeholder="Job name">
                         <select data-job-type="${si},${ji}">
-                          <option value="python" ${job.type !== "copilot" ? "selected" : ""}>python</option>
+                          <option value="terminal" ${job.type === "terminal" ? "selected" : ""}>terminal</option>
                           <option value="copilot" ${job.type === "copilot" ? "selected" : ""}>copilot</option>
                         </select>
                       </div>
@@ -545,7 +545,7 @@
                             <textarea data-prompt="${si},${ji}" placeholder="Copilot prompt" aria-autocomplete="list">${esc(job.prompt || "")}</textarea>
                             <div class="command-suggestions" role="listbox" aria-label="Copilot command suggestions" hidden></div>
                           </div>`
-                        : `<textarea data-script="${si},${ji}" placeholder="Python script">${esc(job.script || "")}</textarea>`}
+                        : `<textarea data-terminal="${si},${ji}" placeholder="Terminal command, e.g. python script.py or g++ main.cpp -o main && ./main">${esc(job.terminal || "")}</textarea>`}
                       <button class="danger" data-remove-job="${si},${ji}">Remove job</button>
                     </div>`).join("")}
                   <div class="editor-actions">
@@ -572,9 +572,9 @@
         draft.stages[si].jobs[ji].type = e.target.value;
         renderEditor();
       });
-      app.querySelectorAll("[data-script]").forEach(el => el.oninput = e => {
-        const [si, ji] = el.dataset.script.split(",").map(Number);
-        draft.stages[si].jobs[ji].script = e.target.value;
+      app.querySelectorAll("[data-terminal]").forEach(el => el.oninput = e => {
+        const [si, ji] = el.dataset.terminal.split(",").map(Number);
+        draft.stages[si].jobs[ji].terminal = e.target.value;
       });
       app.querySelectorAll("[data-prompt]").forEach(el => {
         let selectedIndex = 0;
@@ -608,7 +608,7 @@
         };
       });
       app.querySelectorAll("[data-add-job]").forEach(el => el.onclick = () => {
-        draft.stages[+el.dataset.addJob].jobs.push({ name: "job", type: "python", script: "print('done')" });
+        draft.stages[+el.dataset.addJob].jobs.push({ name: "job", type: "terminal", terminal: "echo done" });
         renderEditor();
       });
       app.querySelectorAll("[data-remove-job]").forEach(el => el.onclick = () => {
@@ -622,7 +622,7 @@
         renderEditor();
       });
       app.querySelector("#add-stage").onclick = () => {
-        draft.stages.push({ name: "stage", jobs: [{ name: "job", type: "python", script: "print('done')" }] });
+        draft.stages.push({ name: "stage", jobs: [{ name: "job", type: "terminal", terminal: "echo done" }] });
         renderEditor();
       };
       app.querySelector("#save").onclick = async () => {

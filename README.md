@@ -1,6 +1,6 @@
 # ai-pipeline
 
-A minimal pipeline runner with a web UI. Stages run sequentially; jobs in a stage run in parallel. Jobs are Python snippets or GitHub Copilot CLI prompts.
+A minimal pipeline runner with a web UI. Stages run sequentially; jobs in a stage run in parallel. Jobs are terminal commands or GitHub Copilot CLI prompts.
 
 ## Installation
 
@@ -25,7 +25,7 @@ Create and edit pipelines in the browser, then press **Run**. Pipelines are stor
 
 ### Job verdicts
 
-Copilot jobs must end their reply with `STATUS: APPROVED` or `STATUS: REJECTED`. Python jobs pass when they exit 0.
+Copilot jobs must end their reply with `STATUS: APPROVED` or `STATUS: REJECTED`. Terminal jobs use the `terminal` field for a Bash command and pass when it exits 0. Commands run in the pipeline working directory and can invoke tools available on the host, e.g. `python script.py` or `g++ main.cpp -o main && ./main`.
 
-Earlier job output is passed to Python jobs as `FACTORY_OUT_<STAGE>_<JOB>` environment variables and included in later Copilot prompts.
+Earlier job output is passed to terminal commands as `FACTORY_OUT_<STAGE>_<JOB>` environment variables and included in later Copilot prompts.
 

@@ -4,7 +4,6 @@ import json
 import os
 import re
 import signal
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -49,14 +48,16 @@ stop and report the blocker instead of trying more commands or workarounds.
 
 class Job(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    type: Literal["python", "copilot"] = "python"
-    script: str = "print('done')"
+    type: Literal["terminal", "copilot"] = "terminal"
+    terminal: str = ""
     prompt: str = ""
 
     @model_validator(mode="after")
-    def validate_prompt(self):
+    def validate_job_input(self):
         if self.type == "copilot" and not self.prompt.strip():
             raise ValueError(f"copilot job '{self.name}' needs a prompt")
+        if self.type == "terminal" and not self.terminal.strip():
+            raise ValueError(f"terminal job '{self.name}' needs a command")
         return self
 
 
@@ -175,7 +176,7 @@ def new_stage(stage: Stage) -> dict:
             {
                 "name": job.name,
                 "type": job.type,
-                "script": job.script,
+                "terminal": job.terminal,
                 "prompt": job.prompt,
                 "status": "created",
                 "verdict": None,
@@ -357,7 +358,7 @@ async def run_job(run: dict, job: dict, context: str, outputs: dict[str, str]) -
             prompt += "\n\nResults from earlier stages:\n\n" + context
         prompt += TOOL_RETRY_INSTRUCTIONS + STATUS_INSTRUCTIONS
     else:
-        argv = [sys.executable, "-u", "-c", job["script"]]
+        argv = ["bash", "-lc", job["terminal"]]
 
     env = {
         **os.environ,
@@ -697,4 +698,4 @@ async def retry_stage(rid: str, si: int) -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", 8000)))
+    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", 8765)))

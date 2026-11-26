@@ -110,6 +110,30 @@ class CopilotRetryTests(unittest.IsolatedAsyncioTestCase):
         argv = create_process.await_args.args
         self.assertIn(f"--session-id={job['copilot_session_id']}", argv)
 
+
+class TerminalCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runs_terminal_command_in_pipeline_workdir(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            job = {
+                "name": "shell",
+                "type": "terminal",
+                "terminal": "printf 'hello from terminal\\n'",
+                "status": "created",
+                "log": "",
+                "exit_code": None,
+                "verdict": None,
+                "started_at": None,
+                "finished_at": None,
+            }
+            run = {"id": "test-command", "workdir": workdir, "status": "running"}
+
+            await app.run_job(run, job, "", {})
+
+        self.assertEqual(job["status"], "success")
+        self.assertEqual(job["exit_code"], 0)
+        self.assertIn("hello from terminal", job["log"])
+
+
 class CopilotPromptTests(unittest.TestCase):
     def test_slash_prefix_invokes_skill(self):
         args, prompt = app.parse_copilot_prompt("/aidlc-analysis grill me")
@@ -136,6 +160,20 @@ class CopilotPromptTests(unittest.TestCase):
 
         self.assertEqual(args, [])
         self.assertEqual(prompt, original)
+
+
+class JobValidationTests(unittest.TestCase):
+    def test_terminal_job_requires_command_text(self):
+        with self.assertRaises(ValueError):
+            app.Job(name="shell", type="terminal")
+
+    def test_terminal_job_rejects_old_command_field(self):
+        with self.assertRaises(ValueError):
+            app.Job(name="shell", type="terminal", command="echo done")
+
+    def test_command_is_not_a_job_type(self):
+        with self.assertRaises(ValueError):
+            app.Job(name="job", type="command")
 
 
 class CopilotCommandDiscoveryTests(unittest.TestCase):
